@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="UserMacros">
+    <CodeFolder>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory).'))\</CodeFolder>
+    <ProjectFolder>$(CodeFolder)..\</ProjectFolder>
+    <CodeExternalFolder>$(CodeFolder)external\</CodeExternalFolder>
+
+    <AppFolder>$(ProjectFolder)app\</AppFolder>
+
+    <ZydisFolder>$(CodeExternalFolder)zydis\3.1.0\</ZydisFolder>
+    <ZycoreFolder>$(ZydisFolder)dependencies\zycore\</ZycoreFolder>
+    <FuncHookerFolder>$(CodeFolder)FuncHooker\</FuncHookerFolder>
+
+    <ZydisIncludePath>$(ZydisFolder)include\</ZydisIncludePath>
+    <ZycoreIncludePath>$(ZycoreFolder)include\</ZycoreIncludePath>
+    <FuncHookerIncludePath>$(FuncHookerFolder)</FuncHookerIncludePath>
+
+    <IntDir>$(ProjectFolder)bin/obj/$(MSBuildProjectName)/$(Configuration)/</IntDir>
+    <OutDir>$(ProjectFolder)bin/</OutDir>
+    <TargetName Condition="'$(Configuration)'=='Debug'">$(MSBuildProjectName)_d</TargetName>
+    <TargetName Condition="'$(Configuration)'=='Release'">$(MSBuildProjectName)</TargetName>
+
+    <RootImported>true</RootImported>
+  </PropertyGroup> 
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!-- 4127 : conditional expression is constant -->
+      <DisableSpecificWarnings>4127;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+
+      <!-- 4201 : nonstandard extension used: nameless struct/union -->
+      <DisableSpecificWarnings>4201;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+
+      <!-- 4324 : structure was padded due to alignment specifier -->
+      <DisableSpecificWarnings>4324;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+
+      <!-- 5040 : dynamic exception specifications are valid only in C++14 and earlier; treating as noexcept(false) -->
+      <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+
+      <!-- 6255 : alloca indicates failure by raising a stack overflow exception. -->
+      <DisableSpecificWarnings>6255;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+
+      <PreprocessorDefinitions>_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>

@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <ProjectGuid>{88A23124-5640-35A0-B890-311D7A67A7D2}</ProjectGuid>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove(root.props))" Condition="$(RootImported) == ''" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v142</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v142</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(ZydisIncludePath);$(ZycoreIncludePath);$(ZydisFolder)msvc;$(ZydisFolder)src</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(ZydisIncludePath);$(ZycoreIncludePath);$(ZydisFolder)msvc;$(ZydisFolder)src</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="$(ZydisFolder)src\FormatterATT.c" />
+    <ClCompile Include="$(ZydisFolder)src\FormatterBase.c" />
+    <ClCompile Include="$(ZydisFolder)src\FormatterBuffer.c" />
+    <ClCompile Include="$(ZydisFolder)src\FormatterIntel.c" />
+    <ClCompile Include="$(ZydisFolder)src\MetaInfo.c" />
+    <ClCompile Include="$(ZydisFolder)src\Mnemonic.c" />
+    <ClCompile Include="$(ZydisFolder)src\Register.c" />
+    <ClCompile Include="$(ZydisFolder)src\SharedData.c" />
+    <ClCompile Include="$(ZydisFolder)src\String.c" />
+    <ClCompile Include="$(ZydisFolder)src\Utils.c" />
+    <ClCompile Include="$(ZydisFolder)src\Zydis.c" />
+    <ClCompile Include="$(ZydisFolder)src\Decoder.c" />
+    <ClCompile Include="$(ZydisFolder)src\DecoderData.c" />
+    <ClCompile Include="$(ZydisFolder)src\Formatter.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Allocator.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Bitset.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Comparison.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Defines.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Format.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\LibC.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Object.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Status.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\String.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Terminal.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Types.h" />
+    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Vector.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Decoder.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\DecoderTypes.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Formatter.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\MetaInfo.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Mnemonic.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Register.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\SharedTypes.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\ShortString.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Status.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Utils.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Zydis.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\SharedData.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\DecoderData.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\FormatterATT.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\FormatterBase.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\FormatterIntel.h" />
+    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\String.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="$(ZydisFolder)resources\VersionInfo.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="zycore.vcxproj">
+      <Project>{e06e2e87-82b9-4dc2-a1e9-fe371cdbaac2}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
