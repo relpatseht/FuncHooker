@@ -81,7 +81,12 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ASMStubs.h" />
     <ClInclude Include="FunkHooker.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ASMStubs.cpp" />
+    <ClCompile Include="FunkHooker.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

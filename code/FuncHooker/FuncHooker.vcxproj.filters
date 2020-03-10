@@ -14,5 +14,16 @@
     <ClInclude Include="FunkHooker.h">
       <Filter>API</Filter>
     </ClInclude>
+    <ClInclude Include="ASMStubs.h">
+      <Filter>Source</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="FunkHooker.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="ASMStubs.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>
