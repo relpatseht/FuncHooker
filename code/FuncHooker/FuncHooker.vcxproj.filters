@@ -11,18 +11,18 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="FunkHooker.h">
-      <Filter>API</Filter>
-    </ClInclude>
     <ClInclude Include="ASMStubs.h">
       <Filter>Source</Filter>
     </ClInclude>
+    <ClInclude Include="FuncHooker.h">
+      <Filter>API</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="FunkHooker.cpp">
+    <ClCompile Include="ASMStubs.cpp">
       <Filter>Source</Filter>
     </ClCompile>
-    <ClCompile Include="ASMStubs.cpp">
+    <ClCompile Include="FuncHooker.cpp">
       <Filter>Source</Filter>
     </ClCompile>
   </ItemGroup>

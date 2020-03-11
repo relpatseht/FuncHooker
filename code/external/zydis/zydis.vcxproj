@@ -49,8 +49,8 @@
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ZydisIncludePath);$(ZycoreIncludePath);$(ZydisFolder)msvc;$(ZydisFolder)src</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ZydisIncludePath);$(ZycoreIncludePath);$(ZydisFolder)src\</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;ZYDIS_DISABLE_FORMATTER;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -64,8 +64,8 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ZydisIncludePath);$(ZycoreIncludePath);$(ZydisFolder)msvc;$(ZydisFolder)src</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ZydisIncludePath);$(ZycoreIncludePath);$(ZydisFolder)src\</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;ZYDIS_DISABLE_FORMATTER;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

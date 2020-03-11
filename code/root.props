@@ -11,8 +11,8 @@
     <ZycoreFolder>$(ZydisFolder)dependencies\zycore\</ZycoreFolder>
     <FuncHookerFolder>$(CodeFolder)FuncHooker\</FuncHookerFolder>
 
-    <ZydisIncludePath>$(ZydisFolder)include\</ZydisIncludePath>
-    <ZycoreIncludePath>$(ZycoreFolder)include\</ZycoreIncludePath>
+    <ZydisIncludePath>$(ZydisFolder)include\;$(ZydisFolder)msvc\</ZydisIncludePath>
+    <ZycoreIncludePath>$(ZycoreFolder)include\;$(ZydisFolder)msvc\</ZycoreIncludePath>
     <FuncHookerIncludePath>$(FuncHookerFolder)</FuncHookerIncludePath>
 
     <IntDir>$(ProjectFolder)bin/obj/$(MSBuildProjectName)/$(Configuration)/</IntDir>

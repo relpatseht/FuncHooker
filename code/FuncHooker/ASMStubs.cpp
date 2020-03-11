@@ -41,7 +41,7 @@ namespace ASM
 
 	namespace X64
 	{
-		REX::REX(bool _64bit, bool regPrefix, bool indexPrefix, bool rmBasePrefix) : rex(0x40 | (_64bit << 3) | (regPrefix << 2) | (indexPrefix << 1) | (rmBasePrefix))) {}
+		REX::REX(bool _64bit, bool regPrefix, bool indexPrefix, bool rmBasePrefix) : rex(0x40 | (_64bit << 3) | (regPrefix << 2) | (indexPrefix << 1) | (rmBasePrefix << 0)) {}
 		REX::REX(uint8_t value) : rex(value) {}
 
 		PushU64::PushU64(uint64_t value) : lowVal(static_cast<uint32_t>(value)), highVal(static_cast<uint32_t>(value >> 32)) {}
