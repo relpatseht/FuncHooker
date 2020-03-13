@@ -87,7 +87,6 @@
     <ClInclude Include="FuncHooker.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ASMStubs.cpp" />
     <ClCompile Include="FuncHooker.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

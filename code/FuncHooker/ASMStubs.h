@@ -14,6 +14,19 @@
 
 namespace ASM
 {
+	namespace detail
+	{
+		template<typename T>
+		static T GetOffset(const void* from, const void* to, uint32_t instrSize)
+		{
+			intptr_t offset = reinterpret_cast<intptr_t>(to) - reinterpret_cast<intptr_t>(from) - instrSize;
+			T castedOffset = static_cast<T>(offset);
+			assert(offset == castedOffset && "Offset too large for given type");
+
+			return castedOffset;
+		}
+	}
+
 	namespace X86
 	{
 		namespace REG
@@ -81,8 +94,8 @@ namespace ASM
 		{
 			const uint8_t modRM;
 
-			ModRM(uint8_t mod, uint8_t reg, uint8_t rm);
-			ModRM(uint8_t value);
+			ModRM(uint8_t mod, uint8_t reg, uint8_t rm) : modRM(((mod & 0x3) << 6) | ((reg & 0x7) << 3) | (rm & 0x7)) {}
+			explicit ModRM(uint8_t value) : modRM(value) {}
 		} PACK_ATTR;
 
 		/* Paired with ModR/M as addressing mode bytes (Scaled Indexed addressing mode Byte)
@@ -102,8 +115,8 @@ namespace ASM
 		{
 			const uint8_t sib;
 
-			SIB(uint8_t scale, uint8_t index, uint8_t base);
-			SIB(uint8_t value);
+			SIB(uint8_t scale, uint8_t index, uint8_t base) : sib(((scale & 0x3) << 6) | ((index & 0x7) << 3) | (base & 0x7)) {}
+			explicit SIB(uint8_t value) : sib(value) {}
 		} PACK_ATTR;
 
 		struct PushU32
@@ -112,7 +125,7 @@ namespace ASM
 			uint32_t value;
 
 			PushU32() = default;
-			explicit PushU32(uint32_t value);
+			explicit PushU32(uint32_t value) : value(value) {}
 		} PACK_ATTR;
 
 		struct NOP
@@ -130,8 +143,8 @@ namespace ASM
 			const uint8_t opcode = 0xE9;
 			int32_t relativeOffset;
 
-			Jmp(const void* from, const void* to);
-			explicit Jmp(int32_t offset);
+			Jmp(const void* from, const void* to) : relativeOffset(detail::GetOffset<int32_t>(from, to, sizeof(Jmp))) {}
+			explicit Jmp(int32_t offset) : relativeOffset(offset) {}
 		} PACK_ATTR;
 
 		struct SJmp
@@ -139,8 +152,8 @@ namespace ASM
 			const uint8_t opcode = 0xEB;
 			int8_t offset;
 
-			SJmp(const void* from, const void* to);
-			explicit SJmp(int8_t offset);
+			SJmp(const void* from, const void* to) : offset(detail::GetOffset<int8_t>(from, to, sizeof(SJmp))) {}
+			explicit SJmp(int8_t offset) : offset(offset) {}
 		} PACK_ATTR;
 
 		struct MovToReg
@@ -148,7 +161,7 @@ namespace ASM
 			const uint8_t movOpcode;
 			uint32_t value;
 
-			MovToReg(uint32_t value, uint8_t reg = REG::EAX);
+			MovToReg(uint32_t value, uint8_t reg=REG::EAX) : movOpcode(0xB8 + (reg & 0x7)), value(value) {}
 		} PACK_ATTR;
 	}
 
@@ -187,8 +200,8 @@ namespace ASM
 		{
 			const uint8_t rex;
 
-			REX(bool _64bit, bool regPrefix, bool indexPrefix, bool rmBasePrefix);
-			explicit REX(uint8_t value);
+			REX(bool _64bit, bool regPrefix, bool indexPrefix, bool rmBasePrefix) : rex(0x40 | (_64bit << 3) | (regPrefix << 2) | (indexPrefix << 1) | (rmBasePrefix << 0)) {}
+			explicit REX(uint8_t value) : rex(value) {}
 		} PACK_ATTR;
 
 		using X86::PushU32;
@@ -203,7 +216,7 @@ namespace ASM
 			uint32_t highVal;
 
 			PushU64() = default;
-			explicit PushU64(uint64_t value);
+			explicit PushU64(uint64_t value) : lowVal(static_cast<uint32_t>(value)), highVal(static_cast<uint32_t>(value >> 32)) {}
 		} PACK_ATTR;
 
 		using X86::Return;
@@ -220,7 +233,7 @@ namespace ASM
 			PushU64 addr;
 			const Return ret{};
 
-			explicit LJmp(const void* addr);
+			explicit LJmp(const void* addr) : addr(reinterpret_cast<uint64_t>(addr)) {};
 		} PACK_ATTR;
 
 
@@ -230,7 +243,7 @@ namespace ASM
 			const uint8_t movOpcode;
 			uint64_t value;
 
-			MovToReg(uint64_t value, uint8_t reg = REG::RAX);
+			MovToReg(uint64_t value, uint8_t reg=REG::RAX) : rex(true, false, false, reg >= REG::R8), movOpcode(0xB8 + (reg & 0x7)), value(value) {}
 		} PACK_ATTR;
 	}
 }

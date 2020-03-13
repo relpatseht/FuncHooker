@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <cmath>
+#include <cstring>
 #include "Zydis/Zydis.h"
 #include "ASMStubs.h"
 #include "FuncHooker.h"
@@ -16,6 +17,14 @@ namespace
 		uint8_t funcHeader[128]; // All code rewrites considered, the absolute worst case scenario (a 14 byte long jump overwriting a table of 7 conditional short jumps each of which then need to be rewritten into long jumps) yields a maximum header size of 126 bytes. 2 bytes for padding because I like round numbers.
 		ASM::X64::LJmp executeInjectee;
 		ASM::X64::LJmp executeInjector;
+
+		InjectionStubImpl(const uint8_t* funcMem, const Hook_FuncPtr InjectionPtr, unsigned overwriteSize) :
+			executeInjectee(funcMem + overwriteSize), // Absolute address :) 
+			executeInjector(InjectionPtr)			  // This is only ever used if we needed a long proxy
+		{
+			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
+			std::memset(funcHeader, nop, sizeof(funcHeader));
+		}
 	};
 
 	template<>
@@ -23,7 +32,16 @@ namespace
 	{
 		uint8_t funcHeader[32]; // All code rewrites considered, the absolute worst case scenario (a 5 byte jump overwriting a table of 2 conditional short jumps each of which then need to be rewritten into regular conditional jumps) then a 13 byte instruction yields a maximum header size of 23 bytes. A few bytes for padding because I like round numbers.
 		ASM::X86::Jmp executeInjectee;
-		ASM::X86::Jmp executeInjector;
+
+		InjectionStubImpl(const uint8_t* funcMem, const Hook_FuncPtr InjectionPtr, unsigned overwriteSize) :
+			executeInjectee(reinterpret_cast<uint8_t*>(this) + offsetof(InjectionStubImpl<4>, executeInjectee),
+				funcMem + overwriteSize)  // Offset FuntionPtr by overwriteSize so we don't infinite loop our header function
+		{
+			((void)InjectionPtr);
+
+			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
+			std::memset(funcHeader, nop, sizeof(funcHeader));
+		}
 	};
 
 	using InjectionStub = InjectionStubImpl<sizeof(void*)>;
@@ -32,7 +50,29 @@ namespace
 	{
 		FreeList* next;
 	};
+}
 
+struct FuncHooker
+{
+	FreeList* freeStubs;
+
+
+};
+
+struct FuncHook
+{
+	InjectionStub* stub;
+	Hook_FuncPtr InjectionFunc;
+	const void* injectionJumpTarget;
+	void* funcBody;
+
+	uint8_t overwriteSize;
+	uint8_t proxyBackupSize;
+	uint8_t proxyBackup[sizeof(ASM::X64::LJmp)];
+};
+
+namespace
+{
 	static void* FindFunctionBody(ZydisDecoder *disasm, Hook_FuncPtr Func)
 	{
 		// The function pointer may just be to a jump statement (IAT in
@@ -114,7 +154,7 @@ namespace
 		// Unfortunately, disassemblers can't work in reverse, we'll have to simply look at bytes
 		// one at a time and determine if they are a type of uint8_t we can view as a nop. Fortunately
 		// all these NOP instruction types are only 1 uint8_t long.
-		static constexpr uint8_t nop = 0x90;
+		static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
 		static constexpr uint8_t int3 = 0xCC;
 
 		const uintptr_t startAddr = reinterpret_cast<uintptr_t>(start);
@@ -132,9 +172,9 @@ namespace
 		return nullptr;
 	}
 
-	static bool InitializeStub(Hook_FuncPtr InjectionFunc, void* funcBody, InjectionStub* outStub)
+	static bool InitializeHook(Hook_FuncPtr InjectionFunc, void* funcBody, void *stubMemPtr, FuncHook* outHook)
 	{
-		const uint8_t* const stubMem = reinterpret_cast<uint8_t*>(outStub);
+		const uint8_t* const stubMem = reinterpret_cast<uint8_t*>(stubMemPtr);
 		const uint8_t* const funcMem = reinterpret_cast<uint8_t*>(funcBody);
 		const uint8_t* const injectMem = reinterpret_cast<uint8_t*>(InjectionFunc);
 
@@ -163,33 +203,57 @@ namespace
 			return sizeof(ASM::X86::Jmp); // Otherwise, we just need 5 bytes for a regular jump.
 		}();
 		const void* const deadZone = FindDeadzone(funcMem, 127, deadZoneMinSize);
-		unsigned overwriteSize;
 
 		// If we found a deadzone, we can setup a proxy, yay!
 		if (deadZone)
 		{
-			overwriteSize = sizeof(ASM::X86::SJmp);
-			
+			outHook->overwriteSize = sizeof(ASM::X86::SJmp);
+			outHook->injectionJumpTarget = deadZone;
+
+			// Make a copy of the (deadzone) region we'll be overwriting,
+			// so we can restore it on unhook (just for cleanliness)
+			outHook->proxyBackupSize = deadZoneMinSize;
+			std::memcpy(outHook->proxyBackup, deadZone, deadZoneMinSize);
 		}
+		else
+		{
+			// No deadzone. Can't write a 2 byte proxy. Determine overwrite size.
+
+			outHook->proxyBackupSize = 0;
+			outHook->overwriteSize = sizeof(ASM::X86::Jmp);
+			outHook->injectionJumpTarget = InjectionFunc;
+
+			if constexpr (sizeof(void*) == 8)
+			{
+				if (std::abs(injectDist) > (1u << 31) - 1)
+				{
+					// We only need 14 bytes if both our stub code (for a long proxy) and our
+					// InjectionFunctiton are over 2gb away
+					if (std::abs(injectDist) > (1u << 31) - 1)
+						outHook->overwriteSize = sizeof(ASM::X64::LJmp);
+					else
+						outHook->injectionJumpTarget = stubMem + offsetof(InjectionStub, executeInjector); // If our stub code is close, jump there instead.
+				}
+			}
+		}
+
+		new (stubMemPtr) InjectionStub(funcMem, InjectionFunc, outHook->overwriteSize);
+		outHook->stub = reinterpret_cast<InjectionStub*>(stubMemPtr);
+		outHook->InjectionFunc = InjectionFunc;
+		outHook->funcBody = funcBody;
+
+		return true;
+	}
+
+	static bool RelocateHeader(ZydisDecoder* disasm, FuncHook* inoutHook)
+	{
+		const uint8_t* fromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
+		const uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
+		const unsigned moveSize = inoutHook->overwriteSize;
+
+
 	}
 }
-
-struct FuncHooker
-{
-	FreeList* freeStubs;
-
-	
-};
-
-struct FuncHook
-{
-	InjectionStub* stub;
-	Hook_FuncPtr InjectionFunc;
-	void* injectionJumpTarget;
-	void* funcBody;
-
-	uint8_t overwriteSize;
-};
 
 extern "C"
 {
@@ -234,12 +298,7 @@ extern "C"
 			{
 				FuncHook* const hook = AllocateHook(ctx);
 
-				hook->stub = AllocateStub(ctx);
-
-				hook->funcBody = funcBody;
-				hook->InjectionFunc = InjectionPtrs[hookIndex];
-				hook->injectionJumpTarget = nullptr;
-				hook->overwriteSize = 0;
+				InitializeHook(InjectionPtrs[hookIndex], funcBody, AllocateStub(ctx), hook);
 
 				outPtrs[hookIndex] = hook;
 				++createdHooks;

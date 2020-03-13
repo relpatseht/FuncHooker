@@ -19,9 +19,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ASMStubs.cpp">
-      <Filter>Source</Filter>
-    </ClCompile>
     <ClCompile Include="FuncHooker.cpp">
       <Filter>Source</Filter>
     </ClCompile>
