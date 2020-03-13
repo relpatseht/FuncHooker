@@ -66,14 +66,34 @@ struct FuncHook
 	const void* injectionJumpTarget;
 	void* funcBody;
 
+	bool hotpatchable;
 	uint8_t overwriteSize;
 	uint8_t proxyBackupSize;
+	uint8_t headerBackupSize;
+	uint8_t proxyBackup[sizeof(ASM::X64::LJmp)];
 	uint8_t proxyBackup[sizeof(ASM::X64::LJmp)];
 };
 
 namespace
 {
-	static void* FindFunctionBody(ZydisDecoder *disasm, Hook_FuncPtr Func)
+	static bool DecodeInstruction(const ZydisDecoder& disasm, const void* addr, ZydisDecodedInstruction* outInst)
+	{
+		static constexpr unsigned MAX_INSTRUCTION = 256;
+		ZyanStatus stat;
+
+		try
+		{
+			stat = ZydisDecoderDecodeBuffer(&disasm, addr, MAX_INSTRUCTION, outInst);
+		}
+		catch (...)
+		{
+			return false;
+		}
+
+		return ZYAN_SUCCESS(stat);
+	}
+
+	static void* FindFunctionBody(const ZydisDecoder &disasm, Hook_FuncPtr Func)
 	{
 		// The function pointer may just be to a jump statement (IAT in
 		// the case of a DLL). We want to modify the actual function,
@@ -85,26 +105,14 @@ namespace
 		uint8_t* bodyPtr = reinterpret_cast<uint8_t*>(Func);
 		for (;;)
 		{
-			static constexpr unsigned MAX_INSTRUCTION = 256;
 
 			ZydisDecodedInstruction inst;
-			ZyanStatus stat;
-			
-			try
-			{
-				stat = ZydisDecoderDecodeBuffer(disasm, bodyPtr, MAX_INSTRUCTION, &inst);
-			}
-			catch (...)
-			{
-				if (bodyPtr == reinterpret_cast<uint8_t*>(Func))
-					bodyPtr = lastBodyPtr;
-				break;
-			}
 
-			if (!ZYAN_SUCCESS(stat))
+			if (DecodeInstruction(disasm, bodyPtr, &inst))
 			{
 				if (bodyPtr == reinterpret_cast<uint8_t*>(Func))
 					bodyPtr = lastBodyPtr;
+
 				break;
 			}
 
@@ -172,7 +180,16 @@ namespace
 		return nullptr;
 	}
 
-	static bool InitializeHook(Hook_FuncPtr InjectionFunc, void* funcBody, void *stubMemPtr, FuncHook* outHook)
+	static bool RelocateHeader(ZydisDecoder* disasm, FuncHook* inoutHook)
+	{
+		const uint8_t* fromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
+		const uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
+		const unsigned moveSize = inoutHook->overwriteSize;
+
+
+	}
+
+	static bool InitializeHook(ZydisDecoder* disasm, Hook_FuncPtr InjectionFunc, void* funcBody, void *stubMemPtr, FuncHook* outHook)
 	{
 		const uint8_t* const stubMem = reinterpret_cast<uint8_t*>(stubMemPtr);
 		const uint8_t* const funcMem = reinterpret_cast<uint8_t*>(funcBody);
@@ -203,6 +220,8 @@ namespace
 			return sizeof(ASM::X86::Jmp); // Otherwise, we just need 5 bytes for a regular jump.
 		}();
 		const void* const deadZone = FindDeadzone(funcMem, 127, deadZoneMinSize);
+
+		std::memset(outHook, 0, sizeof(*outHook));
 
 		// If we found a deadzone, we can setup a proxy, yay!
 		if (deadZone)
@@ -242,16 +261,7 @@ namespace
 		outHook->InjectionFunc = InjectionFunc;
 		outHook->funcBody = funcBody;
 
-		return true;
-	}
-
-	static bool RelocateHeader(ZydisDecoder* disasm, FuncHook* inoutHook)
-	{
-		const uint8_t* fromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
-		const uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
-		const unsigned moveSize = inoutHook->overwriteSize;
-
-
+		return RelocateHeader(disasm, outHook);
 	}
 }
 
@@ -297,11 +307,19 @@ extern "C"
 			if (funcBody)
 			{
 				FuncHook* const hook = AllocateHook(ctx);
+				void* const stubMem = AllocateStub(ctx);
 
-				InitializeHook(InjectionPtrs[hookIndex], funcBody, AllocateStub(ctx), hook);
-
-				outPtrs[hookIndex] = hook;
-				++createdHooks;
+				if (!InitializeHook(&disasm, InjectionPtrs[hookIndex], funcBody, stubMem, hook))
+				{
+					DeallocateStub(ctx, stubMem);
+					DeallocateHook(ctx, hook);
+					outPtrs[hookIndex] = nullptr;
+				}
+				else
+				{
+					outPtrs[hookIndex] = hook;
+					++createdHooks;
+				}
 			}
 			else
 			{
