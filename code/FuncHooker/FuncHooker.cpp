@@ -180,16 +180,160 @@ namespace
 		return nullptr;
 	}
 
-	static bool RelocateHeader(ZydisDecoder* disasm, FuncHook* inoutHook)
+	static __forceinline intptr_t RelocateOffset(intptr_t offset, const uint8_t *from, const uint8_t *to)
 	{
-		const uint8_t* fromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
-		const uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
-		const unsigned moveSize = inoutHook->overwriteSize;
-
-
+		const intptr_t diff = to - from;
+		return offset + diff;
 	}
 
-	static bool InitializeHook(ZydisDecoder* disasm, Hook_FuncPtr InjectionFunc, void* funcBody, void *stubMemPtr, FuncHook* outHook)
+	static bool RelocateCopyInstruction(const ZydisDecodedInstruction& inst, const uint8_t *baseFromAddr, const uint8_t *baseFromEndAddr, const uint8_t **curFromAddrPtr, uint8_t** curToAddrPtr)
+	{
+		uint8_t* curToAddr = *curToAddrPtr;
+		const uint8_t* curFromAddr = *curFromAddrPtr;
+
+		for (unsigned opIndex = 0; opIndex < inst.operand_count; ++opIndex)
+		{
+			const ZydisDecodedOperand& op = inst.operands[opIndex];
+
+			/* We know an operation can only have 1 operand we care about.
+			   Thanks to that, we don't need to store modifications from previous
+			   operands and can return as soon as 1 modification takes place.
+			   This really simplifies the code, as we can assume no modifications
+			   have taken place yet. */
+			switch (op.type)
+			{
+			case ZYDIS_OPERAND_TYPE_IMMEDIATE:
+				if (op.imm.is_relative) // Relative offset (loops, jumps, calls)
+				{
+					const intptr_t offset = op.imm.is_signed ? op.imm.value.s : (intptr_t)op.imm.value.u;
+					const intptr_t movedOffset = RelocateOffset(offset, curFromAddr, curToAddr);
+					const int64_t farOffset64 = (1ll << 31) - 1;
+					const intptr_t farOffset = static_cast<intptr_t>(farOffset64);
+					const uint8_t* const offsetTarget = curFromAddr + inst.length + offset;
+
+					if (offsetTarget >= baseFromAddr && offsetTarget < baseFromEndAddr) // Move a relative instruction targeting our move area
+					{
+						// We only care about relative calls here, which mean we need they
+						// are storing an instruction pointer which we will need to alter.
+						if (inst.mnemonic == ZYDIS_MNEMONIC_CALL)
+						{
+							if (offset < 0)
+								return false; // Negative rleative calls within the target aren't supported
+							else
+							{
+								assert(inst.length == 5);
+
+								// The call to 0 or just jumping a nop. Change it to a push and be done with it.
+								new (curToAddr) ASM::X86::PushU32(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(curFromAddr)) + 5); // 5 is the size of the relative call
+								curToAddr += sizeof(ASM::X86::PushU32);
+
+								if (offset > 127) // need a regular jump
+								{
+									new (curToAddr) ASM::X86::Jmp(curToAddr, curToAddr + offset);
+									curToAddr += sizeof(ASM::X86::Jmp);
+								}
+								else if (offset >= 2) // A short jump will do
+								{
+									new (curToAddr) ASM::X86::SJmp(static_cast<int8_t>(offset));
+									curToAddr += sizeof(ASM::X86::SJmp);
+								}
+							}
+						}
+					}
+					else if (std::abs(movedOffset) > farOffset) // Move a relative instruction far
+					{
+						// Should only be possible in 64 bit code
+						if constexpr (sizeof(void*) == 8)
+						{
+							switch (inst.mnemonic)
+							{
+								case ZYDIS_MNEMONIC_CALL:
+									// A call is just a push and a jump. So push our new return address (just past the long jump)
+									const uint64_t returnAddr = reinterpret_cast<uint64_t>(curToAddr) + sizeof(ASM::X64::PushU64) + sizeof(ASM::X64::LJmp);
+									new (curToAddr) ASM::X64::PushU64(returnAddr);
+									curToAddr += sizeof(ASM::X64::PushU64);
+								break;
+								case ZYDIS_MNEMONIC_JMP:
+									// Unconditional jump. This trivial case only requires a long jump, so do nothing here
+								break;
+								default:
+									// All other jumps are on some condition. Lets just be a little tricky.
+									// We'll change these jumps offsets to be jumping to our long jump over
+									// an unconditional short jump which jumps over the long jump. That way,
+									// if the condition is satisfied, we jump, otherwise, we skip it.
+
+									CopyOperation(operSize);                  // Start by just copying the operaion over
+
+									// All 32 bit conditional jumps follow a pattern. Their only difference
+									// from their 8 bit sisters are they are preceeded by a 0x0F byte and
+									// their opcode is 0x10 larger. Lets convert 32 bit operations to 8 bit
+									// if we can for efficiencies sake.
+									if (operand.GetSize() == 32)
+									{
+										curTo -= sizeof(uint32_t) + 1; // Back up to the operand
+										uint8_t operand = *curTo--;    // Grab the operand and shift back to the 0xF byte.
+										*curTo = operand - 0x10;  // Write in the 8bit operand
+										curTo += 2;               // Shift curTo to where it would have been had we read an 8bit jmp from the start
+									}
+
+									*(curTo - 1) = sizeof(ASM::SJmp);         // And make it a jump over a single short jump
+
+									new (curTo) ASM::SJmp(sizeof(ASM::LJmp)); // Add in our unconditional jump over the long jump
+									curTo += sizeof(ASM::SJmp);
+							}
+						}
+					}
+					else if (op.size == 8)
+					{
+
+					}
+					else
+					{
+
+					}
+				}
+				break;
+			case ZYDIS_OPERAND_TYPE_MEMORY: // Register + offset ptr (eg: [RIP+0x2])
+
+				break;
+			}
+		}
+	}
+
+	static bool RelocateHeader(const ZydisDecoder &disasm, FuncHook* inoutHook)
+	{
+		const uint8_t* fromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
+		uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
+		const unsigned minMoveSize = inoutHook->overwriteSize;
+		unsigned moveSize = 0;
+
+		while (moveSize < minMoveSize)
+		{
+			ZydisDecodedInstruction inst;
+
+			if (!DecodeInstruction(disasm, fromAddr + moveSize, &inst))
+				return false;
+			else
+			{
+				const unsigned instSize = inst.length;
+
+				// If the whole header fits in 1 operation, we know we won't need to
+				// pause threads while overwriting the function header as no thread
+				// can possibly be in the middle of an operation.
+				if (instSize >= minMoveSize && moveSize == 0)
+					inoutHook->hotpatchable = true;
+
+				RelocateCopyInstruction(inst, &toAddr);
+
+				moveSize += instSize;
+			}
+		}
+
+
+		return true;
+	}
+
+	static bool InitializeHook(const ZydisDecoder &disasm, Hook_FuncPtr InjectionFunc, void* funcBody, void *stubMemPtr, FuncHook* outHook)
 	{
 		const uint8_t* const stubMem = reinterpret_cast<uint8_t*>(stubMemPtr);
 		const uint8_t* const funcMem = reinterpret_cast<uint8_t*>(funcBody);
