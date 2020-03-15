@@ -186,6 +186,19 @@ namespace
 		return offset + diff;
 	}
 
+	static bool IsInstructionPointer(ZydisRegister reg)
+	{
+		switch (reg)
+		{
+		case ZYDIS_REGISTER_IP:
+		case ZYDIS_REGISTER_EIP:
+		case ZYDIS_REGISTER_RIP:
+			return true;
+		}
+
+		return false;
+	}
+
 	static bool RelocateCopyInstruction(const ZydisDecodedInstruction& inst, const uint8_t *baseFromAddr, const uint8_t *baseFromEndAddr, const uint8_t **curFromAddrPtr, uint8_t** curToAddrPtr)
 	{
 		uint8_t* curToAddr = *curToAddrPtr;
@@ -262,47 +275,154 @@ namespace
 									// an unconditional short jump which jumps over the long jump. That way,
 									// if the condition is satisfied, we jump, otherwise, we skip it.
 
-									CopyOperation(operSize);                  // Start by just copying the operaion over
+									std::memcpy(curToAddr, curFromAddr, inst.length);                  // Start by just copying the operaion over
+									curToAddr += inst.length;
 
 									// All 32 bit conditional jumps follow a pattern. Their only difference
 									// from their 8 bit sisters are they are preceeded by a 0x0F byte and
 									// their opcode is 0x10 larger. Lets convert 32 bit operations to 8 bit
 									// if we can for efficiencies sake.
-									if (operand.GetSize() == 32)
+									if (op.size == 32)
 									{
-										curTo -= sizeof(uint32_t) + 1; // Back up to the operand
-										uint8_t operand = *curTo--;    // Grab the operand and shift back to the 0xF byte.
-										*curTo = operand - 0x10;  // Write in the 8bit operand
-										curTo += 2;               // Shift curTo to where it would have been had we read an 8bit jmp from the start
+										curToAddr -= sizeof(uint32_t) + 1; // Back up to the operand
+										uint8_t operand = *curToAddr--;    // Grab the operand and shift back to the 0xF byte.
+										*curToAddr = operand - 0x10;       // Write in the 8bit operand
+										curToAddr += 2;                    // Shift curTo to where it would have been had we read an 8bit jmp from the start
 									}
 
-									*(curTo - 1) = sizeof(ASM::SJmp);         // And make it a jump over a single short jump
+									*(curToAddr - 1) = sizeof(ASM::X86::SJmp);         // And make it a jump over a single short jump
 
-									new (curTo) ASM::SJmp(sizeof(ASM::LJmp)); // Add in our unconditional jump over the long jump
-									curTo += sizeof(ASM::SJmp);
+									new (curToAddr) ASM::X86::SJmp(sizeof(ASM::X64::LJmp)); // Add in our unconditional jump over the long jump
+									curToAddr += sizeof(ASM::X86::SJmp);
 							}
+
+							// Now that we've gotten the clever hacks out of the way, we can preform our long jump.
+							intptr_t offset = op.imm.value.s; // Get the offset we were supposed to go.
+							new (curToAddr) ASM::X64::LJmp(curFromAddr + offset); // And make an absolute address out of it.
 						}
 					}
-					else if (op.size == 8)
+					else if (op.size == 8) // Move a short relative instruction far
 					{
+						const intptr_t oldOffset = op.imm.value.s;
+						const intptr_t newOffset = oldOffset + (curToAddr - curFromAddr);
 
+						switch (inst.mnemonic)
+						{
+						case ZYDIS_MNEMONIC_JMP:
+							new (curToAddr) ASM::X86::Jmp(static_cast<int32_t>(newOffset)); // Converting a short jump to a regular jump is trivial.
+							curToAddr += sizeof(ASM::X86::Jmp);
+							break;
+						case ZYDIS_MNEMONIC_JCXZ: case ZYDIS_MNEMONIC_JRCXZ: case ZYDIS_MNEMONIC_JECXZ:
+						case ZYDIS_MNEMONIC_LOOP: case ZYDIS_MNEMONIC_LOOPE: case ZYDIS_MNEMONIC_LOOPNE:
+							// All these instructions are conditional jumps with no 32 bit counterpart.
+							// Let's instead made them jump to a jump to our new offset right over a
+							// jump past our jump to the new offset, thus keeping the condititon and
+							// getting a jump with larger range.
+
+							std::memcpy(curToAddr, curFromAddr, inst.length); // Start by copying over the operation
+							curToAddr += inst.length;
+
+							*(curToAddr - 1) = sizeof(ASM::X86::SJmp);        // Then change the offset to be over a short jump and to our regular jump
+
+							new (curToAddr) ASM::X86::SJmp(sizeof(ASM::X86::Jmp)); // If our condition failed, jump over our regular jump
+							curToAddr += sizeof(ASM::X86::SJmp);
+
+							new (curToAddr) ASM::X86::Jmp(static_cast<int32_t>(newOffset)); // Now, we can safely jump to our new offset only if the condition succeeded.
+							curToAddr += sizeof(ASM::X86::Jmp);
+						break;
+						default:
+							// All other 8 bit conditional jumps share a pattern. To get to their 32
+							// bit counterpart, all you need to do is preceed the opcode with a 0x0F
+							// byte and add 0x10 to the opcode itself.
+
+							std::memcpy(curToAddr, curFromAddr, inst.length);// Copy over the operation (to save any potential prefix bytes)
+							curToAddr += inst.length;
+
+							curToAddr -= 2;                     // Backup our write pointer to the opcode.
+							uint8_t opcode = *curToAddr + 0x10; // Make the new 32 bit opcode
+
+							*curToAddr++ = 0x0F;                // Write in the 0xF byte.
+							*curToAddr++ = opcode;              // Then the 32 bit version of the opcode.
+
+							*((int32_t*)curToAddr++) = static_cast<int32_t>(newOffset); // Now we can safely write in our offset
+						}
 					}
-					else
+					else // Moving sone other relative instruction (no special handling)
 					{
+						const intptr_t oldOffset = op.imm.value.s;
+						const intptr_t newOffset = oldOffset + (curToAddr - curFromAddr);
 
+						std::memcpy(curToAddr, curFromAddr, inst.length); // Copy over the operation
+						curToAddr += inst.length;
+
+						curToAddr -= sizeof(int32_t);  // Backup curTo to where we write the address.
+
+						*((int32_t*)curToAddr++) = static_cast<int32_t>(newOffset); // And write in the new address
 					}
 				}
 				break;
 			case ZYDIS_OPERAND_TYPE_MEMORY: // Register + offset ptr (eg: [RIP+0x2])
+				if (op.mem.base == ZYDIS_REGISTER_RIP || op.mem.index == ZYDIS_REGISTER_RIP) // Handle RIP relative addressing.
+				{
+					const int32_t offset = static_cast<int32_t>(op.mem.disp.value);
+					const int32_t scale = (op.mem.index == ZYDIS_REGISTER_RIP) ? (1 << op.mem.scale) : 1;
+					const intptr_t target = reinterpret_cast<intptr_t>(curFromAddr)* scale + offset;
+					const intptr_t newOffset = target - reinterpret_cast<intptr_t>(curToAddr);
 
-				break;
+					// Sadly, our new offset is just to big. We cannot relate to this new address.
+					if (std::abs(newOffset) > (1u << 31) - 1)
+						return false;
+
+					// I really should recompile the instruction, but for that I would
+					// basically have to build and integrate an assembler, which I believe
+					// wouldn't be worth the effort.
+					// Instead, I'll just copy over the instruction and look for the old
+					// offset starting from the back. When (if) I find it, I'll overwrite
+					// it with the new one.
+
+					const uint8_t* const offsStart = curToAddr + 1;
+					std::memcpy(curToAddr, curFromAddr, inst.length);
+					curToAddr += inst.length;
+
+					// We can add only go to 2 bytes after the start of the operation,
+					// as because of the REX prefix and the opcode we're guaranteed
+					// those CANNOT be our offset.
+					uint8_t* curPos;
+					for (uint8_t* curPos = curToAddr - sizeof(int32_t); curPos > offsStart; --curPos)
+					{
+						if (*((int32_t*)curPos) == offset)
+						{
+							*((int32_t*)curPos) = static_cast<int32_t>(newOffset);
+							break;
+						}
+					}
+
+					if(curPos <= offsStart)
+						return false; // If we got here, we didn't find our offset.
+				}
+			break;
 			}
+
+			if (curToAddr != *curToAddrPtr) // We've copied the instruction
+				break;
 		}
+
+		if (curToAddr == *curToAddrPtr) // this instruction still needs to be copied
+		{
+			std::memcpy(curToAddr, curFromAddr, inst.length);
+			curToAddr += inst.length;
+		}
+
+		*curToAddrPtr = curToAddr;
+		*curFromAddrPtr += inst.length;
+		return true;
 	}
 
 	static bool RelocateHeader(const ZydisDecoder &disasm, FuncHook* inoutHook)
 	{
-		const uint8_t* fromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
+		const uint8_t* const baseFromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
+		const uint8_t* const baseFromAddrEnd = baseFromAddr + inoutHook->overwriteSize;
+		const uint8_t* fromAddr = baseFromAddr;
 		uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
 		const unsigned minMoveSize = inoutHook->overwriteSize;
 		unsigned moveSize = 0;
@@ -311,7 +431,7 @@ namespace
 		{
 			ZydisDecodedInstruction inst;
 
-			if (!DecodeInstruction(disasm, fromAddr + moveSize, &inst))
+			if (!DecodeInstruction(disasm, fromAddr, &inst))
 				return false;
 			else
 			{
@@ -323,7 +443,8 @@ namespace
 				if (instSize >= minMoveSize && moveSize == 0)
 					inoutHook->hotpatchable = true;
 
-				RelocateCopyInstruction(inst, &toAddr);
+				if (!RelocateCopyInstruction(inst, baseFromAddr, baseFromAddrEnd, &fromAddr, &toAddr))
+					return false;
 
 				moveSize += instSize;
 			}
@@ -446,14 +567,14 @@ extern "C"
 
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
-			void* const funcBody = FindFunctionBody(&disasm, FunctionPtrs[hookIndex]);
+			void* const funcBody = FindFunctionBody(disasm, FunctionPtrs[hookIndex]);
 
 			if (funcBody)
 			{
 				FuncHook* const hook = AllocateHook(ctx);
 				void* const stubMem = AllocateStub(ctx);
 
-				if (!InitializeHook(&disasm, InjectionPtrs[hookIndex], funcBody, stubMem, hook))
+				if (!InitializeHook(disasm, InjectionPtrs[hookIndex], funcBody, stubMem, hook))
 				{
 					DeallocateStub(ctx, stubMem);
 					DeallocateHook(ctx, hook);
