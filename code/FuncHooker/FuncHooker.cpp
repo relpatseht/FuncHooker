@@ -69,9 +69,8 @@ struct FuncHook
 	bool hotpatchable;
 	uint8_t overwriteSize;
 	uint8_t proxyBackupSize;
-	uint8_t headerBackupSize;
 	uint8_t proxyBackup[sizeof(ASM::X64::LJmp)];
-	uint8_t proxyBackup[sizeof(ASM::X64::LJmp)];
+	uint8_t headderBackup[sizeof(ASM::X64::LJmp)]; // overwriteSize
 };
 
 namespace
@@ -157,7 +156,7 @@ namespace
 	// padding purposes. A short jump is only 2 bytes long. So, let's count the number of free 
 	// bytes we have before the function and, if it is enough, use a short jump to jump 
 	// backward to our long jump stored just before the function begins.
-	static const void* FindDeadzone(const uint8_t* start, unsigned delta, unsigned minSize)
+	static const void* FindDeadzone(const uint8_t* start, unsigned minSize)
 	{
 		// Unfortunately, disassemblers can't work in reverse, we'll have to simply look at bytes
 		// one at a time and determine if they are a type of uint8_t we can view as a nop. Fortunately
@@ -167,13 +166,12 @@ namespace
 
 		const uintptr_t startAddr = reinterpret_cast<uintptr_t>(start);
 		const uint8_t* const pageStart = reinterpret_cast<uint8_t*>(startAddr & ~0xFFF); // Going over a page boundary could trigger a page fault. For safety...
-		const uint8_t* const pageEnd = reinterpret_cast<uint8_t*>((startAddr + 4095) & ~0xFFF);
 		const uint8_t* prefixStart = start - 1;
 
 		while (prefixStart >= pageStart && start - prefixStart <= minSize && (*prefixStart == nop || *prefixStart == int3))
 			--prefixStart;
 
-		const unsigned prefixBytes = (start - prefixStart) - 1;
+		const unsigned prefixBytes = static_cast<unsigned>((start - prefixStart) - 1);
 		if (prefixBytes >= minSize)
 			return prefixStart + 1;
 
@@ -261,10 +259,12 @@ namespace
 							switch (inst.mnemonic)
 							{
 								case ZYDIS_MNEMONIC_CALL:
+								{
 									// A call is just a push and a jump. So push our new return address (just past the long jump)
 									const uint64_t returnAddr = reinterpret_cast<uint64_t>(curToAddr) + sizeof(ASM::X64::PushU64) + sizeof(ASM::X64::LJmp);
 									new (curToAddr) ASM::X64::PushU64(returnAddr);
 									curToAddr += sizeof(ASM::X64::PushU64);
+								}
 								break;
 								case ZYDIS_MNEMONIC_JMP:
 									// Unconditional jump. This trivial case only requires a long jump, so do nothing here
@@ -297,7 +297,6 @@ namespace
 							}
 
 							// Now that we've gotten the clever hacks out of the way, we can preform our long jump.
-							intptr_t offset = op.imm.value.s; // Get the offset we were supposed to go.
 							new (curToAddr) ASM::X64::LJmp(curFromAddr + offset); // And make an absolute address out of it.
 						}
 					}
@@ -388,7 +387,7 @@ namespace
 					// as because of the REX prefix and the opcode we're guaranteed
 					// those CANNOT be our offset.
 					uint8_t* curPos;
-					for (uint8_t* curPos = curToAddr - sizeof(int32_t); curPos > offsStart; --curPos)
+					for (curPos = curToAddr - sizeof(int32_t); curPos > offsStart; --curPos)
 					{
 						if (*((int32_t*)curPos) == offset)
 						{
@@ -471,7 +470,7 @@ namespace
 		// Now we look for deadzones, or areas in code which are just NOPs or INT 3s.
 		// If we can find one of these which is large enough within 127 bytes, we'll
 		// be able to do a 2 uint8_t short jump to a proxy jump to our InjectionFunction.
-		const unsigned deadZoneMinSize = [&]()
+		const unsigned deadZoneMinSize = [&]() -> unsigned
 		{
 			if constexpr (sizeof(void*) == 8)
 			{
@@ -484,7 +483,7 @@ namespace
 
 			return sizeof(ASM::X86::Jmp); // Otherwise, we just need 5 bytes for a regular jump.
 		}();
-		const void* const deadZone = FindDeadzone(funcMem, 127, deadZoneMinSize);
+		const void* const deadZone = FindDeadzone(funcMem, deadZoneMinSize);
 
 		std::memset(outHook, 0, sizeof(*outHook));
 
@@ -496,7 +495,7 @@ namespace
 
 			// Make a copy of the (deadzone) region we'll be overwriting,
 			// so we can restore it on unhook (just for cleanliness)
-			outHook->proxyBackupSize = deadZoneMinSize;
+			outHook->proxyBackupSize = static_cast<uint8_t>(deadZoneMinSize);
 			std::memcpy(outHook->proxyBackup, deadZone, deadZoneMinSize);
 		}
 		else
@@ -520,6 +519,8 @@ namespace
 				}
 			}
 		}
+
+		std::memcpy(outHook->headderBackup, funcMem, outHook->overwriteSize);
 
 		new (stubMemPtr) InjectionStub(funcMem, InjectionFunc, outHook->overwriteSize);
 		outHook->stub = reinterpret_cast<InjectionStub*>(stubMemPtr);
