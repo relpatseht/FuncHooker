@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <winternl.h>
 #include <cmath>
 #include <cstring>
 #include <malloc.h>
@@ -537,7 +538,7 @@ namespace
 				{
 					const uint8_t * const funcMemStart = reinterpret_cast<uint8_t*>(hook->funcBody) - hook->proxyBackupSize;
 					const uintptr_t funcAddrStart = reinterpret_cast<uintptr_t>(funcMemStart);
-					const uintptr_t funcPageAddr = (funcAddrStart + 0xFFF) & ~0xFFF;
+					const uintptr_t funcPageAddr = funcAddrStart & ~0xFFF;
 					
 					outPages[validCount] = reinterpret_cast<void*>(funcPageAddr);
 					++validCount;
@@ -562,7 +563,7 @@ namespace
 			{
 				for (unsigned pageIndex = 0; pageIndex < count; ++pageIndex)
 				{
-					VirtualProtect(const_cast<LPVOID>(pages[pageIndex]), 4096, PAGE_READWRITE, &oldPrivs[pageIndex]);
+					VirtualProtect(const_cast<LPVOID>(pages[pageIndex]), 4096, PAGE_EXECUTE_READWRITE, &oldPrivs[pageIndex]);
 				}
 			}
 
@@ -596,6 +597,38 @@ namespace
 
 			RAIITimeCriticalBlock(const RAIITimeCriticalBlock&) = delete;
 			RAIITimeCriticalBlock& operator=(const RAIITimeCriticalBlock&) = delete;
+		};
+
+		struct RAIISingleThreadBlock
+		{
+			typedef __kernel_entry NTSTATUS (*QuerySysInfoPtr)(
+				IN SYSTEM_INFORMATION_CLASS SystemInformationClass,
+				OUT PVOID                   SystemInformation,
+				IN ULONG                    SystemInformationLength,
+				OUT PULONG                  ReturnLength
+			); // NtQuerySystemInformation
+
+			RAIISingleThreadBlock()
+			{
+				HANDLE thisThread = GetCurrentThread();
+				HMODULE ntdll = LoadLibraryA("ntdll.dll");
+				QuerySysInfoPtr QuerySystemInformation = (QuerySysInfoPtr)GetProcAddress(ntdll, "NtQuerySystemInformation");
+
+				assert(ntdll && QuerySystemInformation);
+				
+				unsigned oldLockedThreadCount;
+				unsigned lockedThreadCount = 0;
+				do
+				{
+					SYSTEM_PROCESS_INFORMATION procInfo[4096];
+					oldLockedThreadCount = lockedThreadCount;
+
+					NTSTATUS queryStat = QuerySystemInformation(SystemProcessInformation, )
+				} while (lockedThreadCount != oldLockedThreadCount);
+
+
+				FreeLibrary(ntdll);
+			}
 		};
 	}
 }

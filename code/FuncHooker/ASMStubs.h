@@ -249,7 +249,7 @@ namespace ASM
 }
 
 #ifdef _MSC_VER
- 
+# pragma pack(pop)
 #endif //#ifdef _MSC_VER
 
 #undef PACK_ATTR
