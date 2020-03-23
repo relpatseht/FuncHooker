@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <winternl.h>
+#include <ntstatus.h>
 #include <cmath>
 #include <cstring>
 #include <malloc.h>
@@ -587,7 +588,7 @@ namespace
 
 			RAIITimeCriticalBlock() : thread(GetCurrentThread()), oldPriority(GetThreadPriority(thread))
 			{
-				SetThreadPriority(thread, THREAD_PRIORITY_HIGHEST);
+				SetThreadPriority(thread, THREAD_PRIORITY_TIME_CRITICAL);
 			}
 
 			~RAIITimeCriticalBlock()
@@ -599,35 +600,263 @@ namespace
 			RAIITimeCriticalBlock& operator=(const RAIITimeCriticalBlock&) = delete;
 		};
 
+		namespace single_thread
+		{
+			namespace win_internal
+			{
+				typedef __kernel_entry NTSTATUS(*QuerySysInfoPtr)(
+					IN SYSTEM_INFORMATION_CLASS SystemInformationClass,
+					OUT PVOID                   SystemInformation,
+					IN ULONG                    SystemInformationLength,
+					OUT PULONG                  ReturnLength
+					); // NtQuerySystemInformation
+
+				typedef enum _KWAIT_REASON
+				{
+					Executive,
+					FreePage,
+					PageIn,
+					PoolAllocation,
+					DelayExecution,
+					Suspended,
+					UserRequest,
+					WrExecutive,
+					WrFreePage,
+					WrPageIn,
+					WrPoolAllocation,
+					WrDelayExecution,
+					WrSuspended,
+					WrUserRequest,
+					WrEventPair,
+					WrQueue,
+					WrLpcReceive,
+					WrLpcReply,
+					WrVirtualMemory,
+					WrPageOut,
+					WrRendezvous,
+					Spare2,
+					Spare3,
+					Spare4,
+					Spare5,
+					Spare6,
+					WrKernel,
+					MaximumWaitReason
+				} KWAIT_REASON, * PKWAIT_REASON;
+
+				typedef struct _SYSTEM_THREAD_INFORMATION
+				{
+					LARGE_INTEGER KernelTime;
+					LARGE_INTEGER UserTime;
+					LARGE_INTEGER CreateTime;
+					ULONG WaitTime;
+					PVOID StartAddress;
+					CLIENT_ID ClientId;
+					KPRIORITY Priority;
+					LONG BasePriority;
+					ULONG ContextSwitches;
+					ULONG ThreadState;
+					KWAIT_REASON WaitReason;
+				} SYSTEM_THREAD_INFORMATION, * PSYSTEM_THREAD_INFORMATION;
+
+				typedef struct _SYSTEM_PROCESS_INFORMATION
+				{
+					ULONG uNext;
+					ULONG uThreadCount;
+					LARGE_INTEGER WorkingSetPrivateSize; // since VISTA
+					ULONG HardFaultCount; // since WIN7
+					ULONG NumberOfThreadsHighWatermark; // since WIN7
+					ULONGLONG CycleTime; // since WIN7
+					LARGE_INTEGER CreateTime;
+					LARGE_INTEGER UserTime;
+					LARGE_INTEGER KernelTime;
+					UNICODE_STRING ImageName;
+					KPRIORITY BasePriority;
+					HANDLE uUniqueProcessId;
+					HANDLE InheritedFromUniqueProcessId;
+					ULONG HandleCount;
+					ULONG SessionId;
+					ULONG_PTR UniqueProcessKey; // since VISTA (requires SystemExtendedProcessInformation)
+					SIZE_T PeakVirtualSize;
+					SIZE_T VirtualSize;
+					ULONG PageFaultCount;
+					SIZE_T PeakWorkingSetSize;
+					SIZE_T WorkingSetSize;
+					SIZE_T QuotaPeakPagedPoolUsage;
+					SIZE_T QuotaPagedPoolUsage;
+					SIZE_T QuotaPeakNonPagedPoolUsage;
+					SIZE_T QuotaNonPagedPoolUsage;
+					SIZE_T PagefileUsage;
+					SIZE_T PeakPagefileUsage;
+					SIZE_T PrivatePageCount;
+					LARGE_INTEGER ReadOperationCount;
+					LARGE_INTEGER WriteOperationCount;
+					LARGE_INTEGER OtherOperationCount;
+					LARGE_INTEGER ReadTransferCount;
+					LARGE_INTEGER WriteTransferCount;
+					LARGE_INTEGER OtherTransferCount;
+					SYSTEM_THREAD_INFORMATION Threads[1];
+				} SYSTEM_PROCESS_INFORMATION, * PSYSTEM_PROCESS_INFORMATION;
+
+				template<typename T>
+				static T GetNtDLLFuncPtr(const char *funcName)
+				{
+					const HMODULE ntdll = LoadLibraryA("ntdll.dll");
+					return (T)GetProcAddress(ntdll, funcName);
+				}
+
+				static NTSTATUS QuerySystemInformation(SYSTEM_INFORMATION_CLASS SystemInformationClass, PVOID SystemInformation, ULONG SystemInformationLength, PULONG ReturnLength)
+				{
+					static const QuerySysInfoPtr QuerySysInfo = GetNtDLLFuncPtr<QuerySysInfoPtr>("NtQuerySystemInformation");
+
+					return QuerySysInfo(SystemInformationClass, SystemInformation, SystemInformationLength, ReturnLength);;
+				}
+			}
+
+			static bool ProcInfoSnapshot(void** inoutMemPtr, unsigned* inoutMemLen)
+			{
+				void* memPtr = *inoutMemPtr;
+				DWORD memLen = *inoutMemLen;
+
+				for (;;)
+				{
+					DWORD requiredMemLen;
+					NTSTATUS queryStat = win_internal::QuerySystemInformation(SystemProcessInformation, memPtr, memLen, &requiredMemLen);
+
+					if (queryStat == STATUS_INFO_LENGTH_MISMATCH)
+					{
+						VirtualFree(memPtr, 0, MEM_RELEASE);
+
+						// Reserve extra memory, as process/thread count can be growing
+						memLen = ((requiredMemLen + (requiredMemLen >> 2)) + 0xFFFF) & ~0xFFFF;
+						memPtr = VirtualAlloc(nullptr, memLen, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+
+						*inoutMemPtr = memPtr;
+						*inoutMemLen = memLen;
+					}
+					else if (queryStat == STATUS_SUCCESS)
+					{
+						return true;
+					}
+					else
+					{
+						break;
+					}
+				}
+
+				return false;
+			}
+
+			static bool GatherProcessThreads(const DWORD procId, const void *procInfoSnapshotMem, HANDLE** inoutThreadList, unsigned* inoutMaxThreadCount, unsigned *inoutThreadCount)
+			{
+				const win_internal::SYSTEM_PROCESS_INFORMATION* procInfoSnapshot = reinterpret_cast<const win_internal::SYSTEM_PROCESS_INFORMATION*>(procInfoSnapshotMem);
+				const HANDLE procIdHandle = reinterpret_cast<HANDLE>(procId);
+
+				while (procInfoSnapshot && procInfoSnapshot->uUniqueProcessId != procIdHandle)
+				{
+					const uint8_t* const byteProcInfo = reinterpret_cast<const uint8_t*>(procInfoSnapshot);
+					const uint8_t* const byteNextProcInfo = byteProcInfo + procInfoSnapshot->uNext;
+
+					procInfoSnapshot = reinterpret_cast<const win_internal::SYSTEM_PROCESS_INFORMATION*>(byteNextProcInfo);
+				}
+
+				if (procInfoSnapshot)
+				{
+					const win_internal::SYSTEM_PROCESS_INFORMATION& procInfo = *procInfoSnapshot;
+					const unsigned inThreadListCount = *inoutThreadCount;
+					const unsigned threadCount = procInfo.uThreadCount;
+					unsigned maxThreadCount = *inoutMaxThreadCount;
+					HANDLE* threadList = *inoutThreadList;
+
+					if (threadCount > maxThreadCount)
+					{
+						const unsigned requiredThreadMem = (threadCount + inThreadListCount) * sizeof(HANDLE);
+						const unsigned alignedRequiredThreadMem = (requiredThreadMem + 0xFFFF) & ~0xFFFF;
+						HANDLE* const newThreadList = (HANDLE*)VirtualAlloc(nullptr, alignedRequiredThreadMem, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+
+						std::memcpy(newThreadList, threadList, inThreadListCount * sizeof(HANDLE));
+						VirtualFree(threadList, 0, MEM_RELEASE);
+
+						threadList = newThreadList;
+						maxThreadCount = alignedRequiredThreadMem / sizeof(HANDLE);
+						*inoutMaxThreadCount = maxThreadCount;
+						*inoutThreadList = threadList;
+					}
+
+					unsigned outThreadIndex = inThreadListCount;
+					HANDLE* const threadListEnd = threadList + outThreadIndex; 					
+					for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+					{
+						const win_internal::SYSTEM_THREAD_INFORMATION& threadInfo = procInfo.Threads[threadIndex];
+						const DWORD threadId = reinterpret_cast<DWORD>(threadInfo.ClientId.UniqueThread);
+						const HANDLE threadHandle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, false, threadId);
+
+						assert(threadInfo.ClientId.UniqueProcess == procIdHandle);
+
+						if (threadHandle && !std::binary_search(threadList, threadListEnd, threadHandle))
+						{
+							assert(outThreadIndex < maxThreadCount);
+
+							threadList[outThreadIndex] = threadHandle;
+							++outThreadIndex;
+						}
+					}
+					
+					*inoutThreadCount = outThreadIndex;
+					return true;
+				}
+
+				return false;
+			}
+
+		}
 		struct RAIISingleThreadBlock
 		{
-			typedef __kernel_entry NTSTATUS (*QuerySysInfoPtr)(
-				IN SYSTEM_INFORMATION_CLASS SystemInformationClass,
-				OUT PVOID                   SystemInformation,
-				IN ULONG                    SystemInformationLength,
-				OUT PULONG                  ReturnLength
-			); // NtQuerySystemInformation
+			const HANDLE thisThread;
+			HANDLE* threadList;
+			unsigned threadCount;
 
-			RAIISingleThreadBlock()
+			RAIISingleThreadBlock() : thisThread(GetCurrentThread()), threadList(nullptr), threadCount(0)
 			{
-				HANDLE thisThread = GetCurrentThread();
-				HMODULE ntdll = LoadLibraryA("ntdll.dll");
-				QuerySysInfoPtr QuerySystemInformation = (QuerySysInfoPtr)GetProcAddress(ntdll, "NtQuerySystemInformation");
-
-				assert(ntdll && QuerySystemInformation);
+				const DWORD procId = GetCurrentProcessId();
+				void* procInfoMem = nullptr;
+				unsigned procInfoMemLen = 0;
+				unsigned maxThreadCount = threadCount;
+				unsigned oldThreadCount;
 				
-				unsigned oldLockedThreadCount;
-				unsigned lockedThreadCount = 0;
+				// Threads could be created while the gather/suspend process is happening, so do in a loop
 				do
 				{
-					SYSTEM_PROCESS_INFORMATION procInfo[4096];
-					oldLockedThreadCount = lockedThreadCount;
+					oldThreadCount = threadCount;
 
-					NTSTATUS queryStat = QuerySystemInformation(SystemProcessInformation, )
-				} while (lockedThreadCount != oldLockedThreadCount);
+					if (single_thread::ProcInfoSnapshot(&procInfoMem, &procInfoMemLen))
+					{
+						if (single_thread::GatherProcessThreads(procId, procInfoMem, &threadList, &maxThreadCount, &threadCount))
+						{
+							// Suspend newly gathered threads;
+							for (unsigned threadIndex = oldThreadCount; threadIndex < threadCount; ++threadIndex)
+							{
+								if (threadList[threadIndex] != thisThread)
+									SuspendThread(threadList[threadIndex]);
+							}
 
+							// Gather process threads requires a sorted list for a binary search, so do that now.
+							std::sort(threadList, threadList + threadCount);
+						}
+					}
+				} while (oldThreadCount != threadCount);
 
-				FreeLibrary(ntdll);
+				VirtualFree(procInfoMem, 0, MEM_RELEASE); // Don't forget to free the snapshot mem
+			}
+
+			~RAIISingleThreadBlock()
+			{
+				for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+				{
+					if (threadList[threadIndex] != thisThread)
+						ResumeThread(threadList[threadIndex]);
+				}
+
+				VirtualFree(threadList, 0, MEM_RELEASE);
 			}
 		};
 	}
