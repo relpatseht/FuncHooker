@@ -59,8 +59,8 @@ namespace
 struct FuncHooker
 {
 	FreeList* freeStubs;
-
-
+	FreeList* freeHooks;
+	void* memNext;
 };
 
 struct FuncHook
@@ -80,6 +80,102 @@ struct FuncHook
 
 namespace
 {
+	namespace mem
+	{
+		static constexpr unsigned MAX_FUNC_HOOKER_MEM = 1 * 1024 * 1024; // 1mb
+		static constexpr unsigned FUNC_HOOKER_INITIAL_MEM = 4 * 1024; // 4kb
+		static constexpr unsigned FUNC_HOOKER_GROW_SIZE = 4 * 1024; // 4kb
+
+		static void AddHooksAndStubs(FuncHooker* ctx, void* mem, unsigned memSize)
+		{
+			static constexpr unsigned perEntrySize = sizeof(InjectionStub) + sizeof(FuncHook);
+			const unsigned entryCount = memSize / perEntrySize;
+			uint8_t* curMem = reinterpret_cast<uint8_t*>(mem);
+
+			assert(entryCount > 0 && "Not enough memory added for a single stub and hook");
+
+			for (unsigned entryIndex = 0; entryIndex < entryCount; ++entryIndex)
+			{
+				FreeList* const newHook = reinterpret_cast<FreeList*>(curMem);
+				newHook->next = ctx->freeHooks;
+				ctx->freeHooks = newHook;
+				curMem += sizeof(FuncHook);
+
+				FreeList* const newStub = reinterpret_cast<FreeList*>(curMem);
+				newStub->next = ctx->freeStubs;
+				ctx->freeStubs = newStub;
+				curMem += sizeof(InjectionStub);
+			}
+		}
+
+		namespace intern
+		{
+			static void GrowFuncHooker(FuncHooker* ctx)
+			{
+				const uint8_t* const ctxMem = reinterpret_cast<uint8_t*>(ctx);
+				const uint8_t* const ctxMemEnd = ctxMem + MAX_FUNC_HOOKER_MEM;
+				uint8_t* const ctxNextMem = reinterpret_cast<uint8_t*>(ctx->memNext);
+				const size_t bytesRemaining = static_cast<size_t>(ctxNextMem - ctxMemEnd);
+
+				assert(ctxNextMem <= ctxMemEnd && "Corrupted FuncHooker context");
+
+				if (bytesRemaining > FUNC_HOOKER_GROW_SIZE)
+				{
+					uint8_t* const newMem = (uint8_t*)VirtualAlloc(ctxNextMem, FUNC_HOOKER_GROW_SIZE, MEM_COMMIT, PAGE_READWRITE);
+
+					assert(newMem == ctxNextMem && "VirtualAlloc off the reserve");
+
+					AddHooksAndStubs(ctx, newMem, FUNC_HOOKER_GROW_SIZE);
+					ctx->memNext = newMem + FUNC_HOOKER_GROW_SIZE;
+				}
+			}
+
+			template<typename T, FreeList * (FuncHooker:: * freeList)>
+			static T* Allocate(FuncHooker* ctx)
+			{
+				if (!ctx->*freeList)
+					GrowFuncHooker(ctx);
+
+				if (ctx->*freeList)
+				{
+					T* const newItem = reinterpret_cast<T*>(ctx->*freeList);
+
+					(ctx->*freeList) = (ctx->*freeList)->next;
+
+					return newItem;
+				}
+
+				return nullptr;
+			}
+		}
+
+		static FuncHook* AllocateHook(FuncHooker* ctx)
+		{
+			return intern::Allocate<FuncHook, &FuncHooker::freeHooks>(ctx);
+		}
+
+		static InjectionStub* AllocateStub(FuncHooker* ctx)
+		{
+			return intern::Allocate<InjectionStub, &FuncHooker::freeStubs>(ctx);
+		}
+
+		static void DeallocateHook(FuncHooker* ctx, void *hookMem)
+		{
+			FreeList* const newItem = reinterpret_cast<FreeList*>(hookMem);
+
+			newItem->next = ctx->freeHooks;
+			ctx->freeHooks = newItem;
+		}
+
+		static void DeallocateStub(FuncHooker* ctx, void *stubMem)
+		{
+			FreeList* const newItem = reinterpret_cast<FreeList*>(stubMem);
+
+			newItem->next = ctx->freeStubs;
+			ctx->freeStubs = newItem;
+		}
+	}
+
 	namespace create
 	{
 		static bool DecodeInstruction(const ZydisDecoder& disasm, const void* addr, ZydisDecodedInstruction* outInst)
@@ -807,8 +903,8 @@ namespace
 
 				return false;
 			}
-
 		}
+
 		struct RAIISingleThreadBlock
 		{
 			const HANDLE thisThread;
@@ -866,14 +962,25 @@ extern "C"
 {
 	struct FuncHooker* Hook_CreateContext(void)
 	{
-		FuncHooker* const ctx = (FuncHooker*)VirtualAlloc(nullptr, 64 * 1024, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-
-		if (ctx)
+		uint8_t* const ctxMemStart = (uint8_t*)VirtualAlloc(nullptr, mem::MAX_FUNC_HOOKER_MEM, MEM_RESERVE, PAGE_NOACCESS);
+		uint8_t *memCur = (uint8_t*)VirtualAlloc(ctxMemStart, mem::FUNC_HOOKER_INITIAL_MEM, MEM_COMMIT, PAGE_READWRITE);
+		
+		if (memCur)
 		{
+			FuncHooker* const ctx = (FuncHooker*)memCur;
 
+			assert(memCur == ctxMemStart && "Virtual alloc commit off reserve.");
+
+			ctx->memNext = memCur + mem::FUNC_HOOKER_INITIAL_MEM;
+			ctx->freeHooks = nullptr;
+			ctx->freeStubs = nullptr;
+
+			mem::AddHooksAndStubs(ctx, memCur + sizeof(FuncHooker), mem::FUNC_HOOKER_INITIAL_MEM - sizeof(FuncHooker));
+
+			return ctx;
 		}
 
-		return ctx;
+		return nullptr;
 	}
 
 	struct FuncHook* Hook_Create(struct FuncHooker* ctx, Hook_FuncPtr FunctionPtr, Hook_FuncPtr InjectionPtr)
@@ -903,13 +1010,13 @@ extern "C"
 
 			if (funcBody)
 			{
-				FuncHook* const hook = AllocateHook(ctx);
-				void* const stubMem = AllocateStub(ctx);
+				FuncHook* const hook = mem::AllocateHook(ctx);
+				void* const stubMem = mem::AllocateStub(ctx);
 
 				if (!create::InitializeHook(disasm, InjectionPtrs[hookIndex], funcBody, stubMem, hook))
 				{
-					DeallocateStub(ctx, stubMem);
-					DeallocateHook(ctx, hook);
+					mem::DeallocateStub(ctx, stubMem);
+					mem::DeallocateHook(ctx, hook);
 					outPtrs[hookIndex] = nullptr;
 				}
 				else
@@ -937,6 +1044,13 @@ extern "C"
 		const void** const privAddrs = (const void**)_alloca(sizeof(void**) * count);
 		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, true, privAddrs);
 		DWORD* const oldPrivileges = (DWORD*)_alloca(sizeof(DWORD) * privAddrCount);
+
+		// We need to make every function page read/writeable, then make sure none of the
+		// functions are executing while we install the hooks. It's best to do that ASAP,
+		// so make our thread time critical while we do it.
+		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, count);
+		modify::RAIITimeCriticalBlock raiiTimeCritical;
+		modify::RAIISingleThreadBlock raiiSingleThreaded;
 	}
 
 	bool Hook_Uninstall(struct FuncHook* funcHooker);
