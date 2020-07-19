@@ -236,6 +236,26 @@ namespace
 			}
 		}
 
+		static void UnprotectStubAllocator(Allocator* curAlloc)
+		{
+			void* const memStart = reinterpret_cast<void*>(curAlloc->start);
+			const size_t length = curAlloc->pageEnd - curAlloc->start;
+			DWORD oldProtect;
+
+			bool success = VirtualProtect(memStart, length, PAGE_READWRITE, &oldProtect);
+			assert(success && "Mem unprotection failed.");
+		}
+
+		static void ProtectStubAllocator(Allocator* curAlloc)
+		{
+			void* const memStart = reinterpret_cast<void*>(curAlloc->start);
+			const size_t length = curAlloc->pageEnd - curAlloc->start;
+			DWORD oldProtect;
+
+			bool success = VirtualProtect(memStart, length, PAGE_EXECUTE_READ, &oldProtect);
+			assert(success && "Mem protection failed.");
+		}
+
 		static Allocator* InitAllocator(void* mem)
 		{
 			Allocator* const allocator = reinterpret_cast<Allocator*>(mem);
@@ -290,7 +310,9 @@ namespace
 			{
 				if (curAlloc->start >= lowAddr && curAlloc->end < highAddr)
 				{
+					UnprotectStubAllocator(curAlloc);
 					InjectionStub* const newStub = alloc::Allocate<InjectionStub>(curAlloc);
+					ProtectStubAllocator(curAlloc);
 
 					if (newStub)
 						return newStub;
@@ -305,6 +327,7 @@ namespace
 			{
 				curAlloc->next = stubAllocHead;
 				*stubAllocHeadPtr = curAlloc;
+				ProtectStubAllocator(curAlloc);
 
 				return alloc::Allocate<InjectionStub>(curAlloc);
 			}
@@ -314,7 +337,9 @@ namespace
 			curAlloc = stubAllocHead;
 			while (curAlloc)
 			{
+				UnprotectStubAllocator(curAlloc);
 				InjectionStub* const newStub = alloc::Allocate<InjectionStub>(curAlloc);
+				ProtectStubAllocator(curAlloc);
 
 				if (newStub)
 					return newStub;
@@ -328,6 +353,7 @@ namespace
 			{
 				curAlloc->next = stubAllocHead;
 				*stubAllocHeadPtr = curAlloc;
+				ProtectStubAllocator(curAlloc);
 
 				return alloc::Allocate<InjectionStub>(curAlloc);
 			}
@@ -1389,8 +1415,10 @@ extern "C"
 	{
 		return Hook_DestroyMany(ctx, &funcHook, 1) == 1;
 	}
+
 	unsigned Hook_DestroyMany(struct FuncHooker* ctx, struct FuncHook** funcHooks, unsigned count)
 	{
+		// If any of the hooks are still installed, be sure to uninstall them
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
 			FuncHook* const hook = funcHooks[hookIndex];
@@ -1404,6 +1432,15 @@ extern "C"
 
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
+			FuncHook* const hook = funcHooks[hookIndex];
+
+			if (hook->stub)
+			{
+				if (hook->proxyBackup)
+				{
+
+				}
+			}
 		}
 	}
 
