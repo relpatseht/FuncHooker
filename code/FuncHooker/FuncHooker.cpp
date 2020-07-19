@@ -214,7 +214,10 @@ namespace
 				unsigned allocated = 0;
 				while (alloc->freeList && allocated < count)
 				{
-					outPtrs[allocated++] = reinterpret_cast<T*>(alloc->freeList);
+					outPtrs[allocated] = reinterpret_cast<T*>(alloc->freeList);
+					std::memset(outPtrs[allocated], 0, sizeof(T));
+					++allocated;
+
 					alloc->freeList = alloc->freeList->next;
 				}
 
@@ -230,6 +233,59 @@ namespace
 				}
 
 				return allocated;
+			}
+
+			template<typename T>
+			static unsigned AllocateMany(Allocator** allocHeadPtr, T** outPtrs, unsigned count)
+			{
+				Allocator* const allocHead = *allocHeadPtr;
+				Allocator* curAlloc = allocHead;
+				unsigned allocated = 0;
+
+				while (curAlloc && allocated < count)
+				{
+					allocated += alloc::Allocate<T>(curAlloc, outPtrs + allocated, count - allocated);
+					curAlloc = curAlloc->next;
+				}
+
+				while (allocated < count)
+				{
+					curAlloc = alloc::AllocAllocator();
+
+					if (!curAlloc)
+						break;
+					else
+					{
+						curAlloc->next = allocHead;
+						*allocHeadPtr = curAlloc;
+
+						allocated += alloc::Allocate<FuncHook>(curAlloc, outPtrs + allocated, count - allocated);
+					}
+				}
+
+				return allocated;
+			}
+
+			static unsigned GatherStubIndicesWithin2GBOfAllocator(Allocator* alloc, const InjectionStub** stubs, const void** hintAddrs, unsigned stubCount, unsigned* outIndices)
+			{
+				unsigned validCount = 0;
+
+				for (unsigned stubIndex = 0; stubIndex < stubCount; ++stubIndex)
+				{
+					if (!stubs[stubIndex])
+					{
+						const uintptr_t stubAddr = reinterpret_cast<uintptr_t>(hintAddrs[stubIndex]);
+						const uintptr_t lowAddr = stubAddr - TWO_GB;
+						const uintptr_t highAddr = stubAddr + TWO_GB;
+
+						if (alloc->start >= lowAddr && alloc->end < highAddr)
+						{
+							outIndices[validCount++] = stubIndex;
+						}
+					}
+				}
+
+				return validCount;
 			}
 		}
 
@@ -272,100 +328,108 @@ namespace
 
 		static unsigned AllocateHooks(Allocator** hookAllocHeadPtr, FuncHook **outHooks, unsigned count)
 		{
-			Allocator* const hookAllocHead = *hookAllocHeadPtr;
-			Allocator* curAlloc = hookAllocHead;
+			return alloc::AllocateMany(hookAllocHeadPtr, outHooks, count);
+		}
+
+		static unsigned AllocateStubs(Allocator** stubAllocHeadPtr, InjectionStub **outStubs, const void **hintAddrs, unsigned count)
+		{
+			unsigned* allocIndices = (unsigned*)_malloca(sizeof(unsigned) * count);
+			InjectionStub** tempStubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
+			Allocator* const stubAllocHead = *stubAllocHeadPtr;
+			Allocator* curAlloc = stubAllocHead;
 			unsigned allocated = 0;
+
+			std::memset(outStubs, 0, sizeof(InjectionStub*) * count);
 
 			while (curAlloc && allocated < count)
 			{
-				allocated += alloc::Allocate<FuncHook>(curAlloc, outHooks + allocated, count - allocated);
+				const unsigned validCount = alloc::GatherStubIndicesWithin2GBOfAllocator(curAlloc, outStubs, hintAddrs, count, allocIndices);				
+
+				if(validCount > 0)
+				{
+					protect::UnprotectStubAllocator(curAlloc);
+					const unsigned allocedStubs = alloc::Allocate<InjectionStub>(curAlloc, tempStubs, validCount);
+
+					// Don't reprotect allocated stubs, since they'll be written to soon anyway. Reprotect after write
+					if(allocedStubs == 0)
+						protect::ProtectStubAllocator(curAlloc);
+					else
+					{
+						for (unsigned tempIndex = 0; tempIndex < allocedStubs; ++tempIndex)
+						{
+							InjectionStub* const newStub = tempStubs[tempIndex];
+							const unsigned stubIndex = allocIndices[tempIndex];
+
+							assert(outStubs[stubIndex] == nullptr);
+							outStubs[stubIndex] = newStub;
+						}
+
+						allocated += allocedStubs;
+					}
+				}
+
 				curAlloc = curAlloc->next;
 			}
 
-			while (allocated < count)
+			if (allocated < count)
 			{
-				curAlloc = alloc::AllocAllocator();
-
-				if (!curAlloc)
-					break;
-				else
+				for (unsigned stubIndex = 0; stubIndex < count; ++stubIndex)
 				{
-					curAlloc->next = hookAllocHead;
-					*hookAllocHeadPtr = curAlloc;
+					if (!outStubs[stubIndex])
+					{
+						curAlloc = alloc::AllocAllocatorWithin2GB(hintAddrs[stubIndex]);
 
-					allocated += alloc::Allocate<FuncHook>(curAlloc, outHooks + allocated, count - allocated);
+						if (curAlloc)
+						{
+							const unsigned validCount = alloc::GatherStubIndicesWithin2GBOfAllocator(curAlloc, outStubs, hintAddrs, count, allocIndices);
+							const unsigned allocedStubs = alloc::Allocate<InjectionStub>(curAlloc, tempStubs, validCount);
+
+							assert(validCount > 0 && "Allocator dsigned for stub did not apply to it");
+							assert(allocedStubs > 0 && "New allocatoe couldn't be allocated from");
+
+							for (unsigned tempIndex = 0; tempIndex < allocedStubs; ++tempIndex)
+							{
+								InjectionStub* const newStub = tempStubs[tempIndex];
+								const unsigned stubIndex = allocIndices[tempIndex];
+
+								assert(outStubs[stubIndex] == nullptr);
+								outStubs[stubIndex] = newStub;
+							}
+
+							allocated += allocedStubs;
+						}
+					}
+				}
+
+				if (allocated < count)
+				{
+					// Now try to allocate from anywhere. Give up on being within 2GB
+					const unsigned allocedStubs = alloc::AllocateMany(stubAllocHeadPtr, tempStubs, count - allocated);
+
+					if (allocedStubs > 0)
+					{
+						unsigned tempIndex = 0;
+						for (unsigned stubIndex = 0; stubIndex < count; ++stubIndex)
+						{
+							if (!outStubs[stubIndex])
+							{
+								outStubs[stubIndex] = tempStubs[tempIndex++];
+								if (tempIndex >= allocedStubs)
+									break;
+							}
+						}
+
+						allocated += allocedStubs;
+					}
 				}
 			}
+
+			assert(allocated <= count);
+
+			_freea(tempStubs);
+			_freea(allocIndices);
 
 			return allocated;
-		}
-
-		static void AllocateHooks(Allocator* hookAllocHeadPtr, FuncHook** outHooks, unsigned hookCount)
-		{
-
-		}
-
-		static InjectionStub* AllocateStub(Allocator** stubAllocHeadPtr, const void *hintAddr)
-		{
-			const uintptr_t baseAddr = reinterpret_cast<uintptr_t>(hintAddr);
-			const uintptr_t lowAddr = baseAddr - TWO_GB;
-			const uintptr_t highAddr = baseAddr + (TWO_GB - sizeof(InjectionStub));
-			Allocator* const stubAllocHead = *stubAllocHeadPtr;
-			Allocator* curAlloc = stubAllocHead;
-
-			while (curAlloc)
-			{
-				if (curAlloc->start >= lowAddr && curAlloc->end < highAddr)
-				{
-					UnprotectStubAllocator(curAlloc);
-					InjectionStub* const newStub = alloc::Allocate<InjectionStub>(curAlloc);
-					ProtectStubAllocator(curAlloc);
-
-					if (newStub)
-						return newStub;
-				}
-
-				curAlloc = curAlloc->next;
-			}
-
-			curAlloc = alloc::AllocAllocatorWithin2GB(hintAddr);
-
-			if (curAlloc)
-			{
-				curAlloc->next = stubAllocHead;
-				*stubAllocHeadPtr = curAlloc;
-				ProtectStubAllocator(curAlloc);
-
-				return alloc::Allocate<InjectionStub>(curAlloc);
-			}
-
-			// Now we give up on being within 2gb
-
-			curAlloc = stubAllocHead;
-			while (curAlloc)
-			{
-				UnprotectStubAllocator(curAlloc);
-				InjectionStub* const newStub = alloc::Allocate<InjectionStub>(curAlloc);
-				ProtectStubAllocator(curAlloc);
-
-				if (newStub)
-					return newStub;
-
-				curAlloc = curAlloc->next;
-			}
-
-			curAlloc = alloc::AllocAllocator();
-
-			if (curAlloc)
-			{
-				curAlloc->next = stubAllocHead;
-				*stubAllocHeadPtr = curAlloc;
-				ProtectStubAllocator(curAlloc);
-
-				return alloc::Allocate<InjectionStub>(curAlloc);
-			}
-
-			return nullptr;
 		}
 
 		static void DeallocateHook(Allocator *hookAlloc, void *hookMem)
@@ -1287,6 +1351,8 @@ extern "C"
 		void** const funcBodies = (void**)_malloca(sizeof(void*) * count);
 		FuncHook** const hooks = (FuncHook**)_malloca(sizeof(FuncHook*) * count);
 		InjectionStub** const stubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
+		InjectionStub** const failedStubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
+		FuncHook** const failedHooks = hooks;
 
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
@@ -1294,17 +1360,24 @@ extern "C"
 		}
 
 		mem::AllocateHooks(&ctx->hookAlloc, hooks, count);
+		mem::AllocateStubs(&ctx->hookAlloc, stubs, funcBodies, count);
 
-			if (funcBody)
+		unsigned failedCount = 0;
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+			FuncHook* const hook = hooks[hookIndex];
+			InjectionStub* const stub = stubs[hookIndex];
+
+			if (!(hook || stub))
+				outPtrs[hookIndex] = nullptr;
+			else
 			{
-				FuncHook* const hook = mem::AllocateHook(&ctx->hookAlloc);
-				void* const stubMem = mem::AllocateStub(&ctx->stubAlloc, funcBody);
-
-				if (!create::InitializeHook(disasm, InjectionPtrs[hookIndex], funcBody, stubMem, hook))
+				if (!create::InitializeHook(disasm, InjectionPtrs[hookIndex], funcBodies[hookIndex], stub, hook))
 				{
-					mem::DeallocateStub(ctx->hookAlloc, stubMem);
-					mem::DeallocateHook(ctx->stubAlloc, hook);
+					failedHooks[failedCount] = hook;
+					failedStubs[failedCount] = stub;
 					outPtrs[hookIndex] = nullptr;
+					++failedCount;
 				}
 				else
 				{
@@ -1312,12 +1385,18 @@ extern "C"
 					++createdHooks;
 				}
 			}
-			else
-			{
-				outPtrs[hookIndex] = nullptr;
-			}
 		}
-		
+
+		mem::DeallocateHooks(ctx->hookAlloc, failedHooks, failedCount);
+		mem::DeallocateStubs(ctx->stubAlloc, failedStubs, failedCount);
+
+		// Re-protect all stubs, by page
+		for()
+
+		_freea(failedStubs);
+		_freea(stubs);
+		_freea(hooks);
+		_freea(funcBodies);
 		return createdHooks;
 	}
 
