@@ -955,6 +955,38 @@ namespace
 				VirtualFree(threadList, 0, MEM_RELEASE);
 			}
 		};
+
+
+		static void RelocateMovedIPs(HANDLE* threadList, unsigned threadCount, const FuncHook** hooks, unsigned hookCount)
+		{
+			for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+			{
+				HANDLE thread = threadList[threadIndex];
+				CONTEXT threadContext{};
+
+				threadContext.ContextFlags = CONTEXT_CONTROL;
+				GetThreadContext(thread, &threadContext);
+
+				const uintptr_t ip = threadContext.Rip;
+
+				for (unsigned hookIndex = 0; hookIndex < hookCount; ++hookIndex)
+				{
+					const FuncHook& hook = *hooks[hookIndex];
+					const uintptr_t overwriteStart = reinterpret_cast<uintptr_t>(hook.funcBody);
+					const uintptr_t overwriteEnd = overwriteStart + hook.overwriteSize;
+
+					if (ip >= overwriteStart && ip < overwriteEnd)
+					{
+						const uintptr_t destStart = reinterpret_cast<uintptr_t>(hook.stub);
+						const uintptr_t destOffset = ip - overwriteStart;
+
+						threadContext.Rip = destStart + destOffset;
+						SetThreadContext(thread, &threadContext);
+						break;
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -1013,6 +1045,11 @@ extern "C"
 				FuncHook* const hook = mem::AllocateHook(ctx);
 				void* const stubMem = mem::AllocateStub(ctx);
 
+				stubMem needs to be in executable memory, and preferably very close to the function body.
+				Need to adjust allocate stub/memory allocation in general to have list of available pages
+				within +- 2gb of mem to select correct page.
+				Also need to mark stubMem as writeable during initalization, then back to read/execute only.
+
 				if (!create::InitializeHook(disasm, InjectionPtrs[hookIndex], funcBody, stubMem, hook))
 				{
 					mem::DeallocateStub(ctx, stubMem);
@@ -1051,17 +1088,144 @@ extern "C"
 		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, count);
 		modify::RAIITimeCriticalBlock raiiTimeCritical;
 		modify::RAIISingleThreadBlock raiiSingleThreaded;
+
+		// Make sure any thread IPs within the moved range are relocated to the stub
+		modify::RelocateMovedIPs(raiiSingleThreaded.threadList, raiiSingleThreaded.threadCount, funcHooks, count);
+
+		unsigned installedHooks = 0;
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+			static constexpr uint8_t nopOpcode = 0x90;
+			static constexpr size_t LONG_JUMP = sizeof(ASM::X64::LJmp);
+			static constexpr size_t JUMP = sizeof(ASM::X86::Jmp);
+			static constexpr size_t SHORT_JUMP = sizeof(ASM::X86::SJmp);
+			FuncHook * const hook = funcHooks[hookIndex];
+
+			if (hook && !hook->isInstalled)
+			{
+				try
+				{
+					std::memset(hook->funcBody, nopOpcode, hook->overwriteSize);
+
+					switch (hook->overwriteSize)
+					{
+					case LONG_JUMP:
+						new (hook->funcBody) ASM::X64::LJmp(hook->injectionJumpTarget);
+						break;
+					case JUMP:
+						new (hook->funcBody) ASM::X86::Jmp(hook->funcBody, hook->injectionJumpTarget);
+						break;
+					case SHORT_JUMP:
+						new (hook->funcBody) ASM::X86::SJmp(hook->funcBody, hook->injectionJumpTarget);
+						break;
+					default:
+						assert(0 && "Unknown hook overwrite size");
+						continue;
+					}
+
+					hook->isInstalled = true;
+					++installedHooks;
+				}
+				catch (...)
+				{
+				}
+			}
+		}
+
+		return installedHooks;
 	}
 
-	bool Hook_Uninstall(struct FuncHook* funcHooker);
-	unsigned Hook_UninstallMany(struct FuncHook** funcHookers, unsigned count);
+	bool Hook_Uninstall(struct FuncHook* funcHook)
+	{
+		return Hook_UninstallMany(&funcHook, 1) == 1;
+	}
 
-	typedef void (*Hook_FuncPtr)(void);
-	const Hook_FuncPtr Hook_GetTrampoline(struct FuncHook* funcHooker);
-	unsigned Hook_GetTrampolines(struct FuncHook** funcHookers, unsigned count, const void** outPtrs);
+	unsigned Hook_UninstallMany(struct FuncHook** funcHooks, unsigned count)
+	{
+		const void** const privAddrs = (const void**)_alloca(sizeof(void**) * count);
+		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, true, privAddrs);
+		DWORD* const oldPrivileges = (DWORD*)_alloca(sizeof(DWORD) * privAddrCount);
 
-	void Hook_Destroy(struct FuncHooker* ctx, struct FuncHook* funcHooker);
-	unsigned Hook_DestroyMany(struct FuncHooker* ctx, struct FuncHook** funcHookers, unsigned count);
+		// We need to make every function page read/writeable, then make sure none of the
+		// functions are executing while we install the hooks. It's best to do that ASAP,
+		// so make our thread time critical while we do it.
+		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, count);
+		modify::RAIITimeCriticalBlock raiiTimeCritical;
+		modify::RAIISingleThreadBlock raiiSingleThreaded;
+
+		unsigned removedHooks = 0;
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+			FuncHook* const hook = funcHooks[hookIndex];
+
+			if (hook->isInstalled)
+			{
+				try
+				{
+					std::memcpy(hook->funcBody, hook->proxyBackup, hook->proxyBackupSize);
+					hook->isInstalled = false;
+					++removedHooks;
+				}
+				catch (...)
+				{
+				}
+			}
+		}
+
+		return removedHooks;
+	}
+
+	const Hook_FuncPtr Hook_GetTrampoline(const struct FuncHook* funcHook)
+	{
+		Hook_FuncPtr out;
+		if (Hook_GetTrampolines(&funcHook, 1, &out) == 1)
+			return out;
+
+		return nullptr;
+	}
+
+	unsigned Hook_GetTrampolines(const struct FuncHook** funcHooks, unsigned count, Hook_FuncPtr* outPtrs)
+	{
+		unsigned trampolineCount = 0;
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+			const FuncHook * const hook = funcHooks[hookIndex];
+
+			if (hook && hook->isInstalled && hook->stub)
+			{
+				outPtrs[hookIndex] = reinterpret_cast<Hook_FuncPtr>(hook->stub);
+				++trampolineCount;
+			}
+			else
+			{
+				outPtrs[hookIndex] = nullptr;
+			}
+		}
+
+		return trampolineCount;
+	}
+
+	bool Hook_Destroy(struct FuncHooker* ctx, struct FuncHook* funcHook)
+	{
+		return Hook_DestroyMany(ctx, &funcHook, 1) == 1;
+	}
+	unsigned Hook_DestroyMany(struct FuncHooker* ctx, struct FuncHook** funcHooks, unsigned count)
+	{
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+			FuncHook* const hook = funcHooks[hookIndex];
+
+			if (hook && hook->isInstalled)
+			{
+				Hook_UninstallMany(funcHooks, count);
+				break;
+			}
+		}
+
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+		}
+	}
 
 	struct FuncHooker* Hook_DestroyContext(void);
 }

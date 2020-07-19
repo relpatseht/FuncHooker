@@ -28,17 +28,17 @@ extern "C"
 	FUNCHOOKER_DLLAPI struct FuncHook* FUNCHOOKER_DLLCALL Hook_Create(struct FuncHooker *ctx, Hook_FuncPtr FunctionPtr, Hook_FuncPtr InjectionPtr);
 	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_CreateMany(struct FuncHooker* ctx, Hook_FuncPtr* FunctionPtrs, Hook_FuncPtr* InjectionPtrs, unsigned count, struct FuncHook **outPtrs);
 
-	FUNCHOOKER_DLLAPI bool FUNCHOOKER_DLLCALL Hook_Install(struct FuncHook* funcHooker);
-	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_InstallMany(struct FuncHook** funcHookers, unsigned count);
+	FUNCHOOKER_DLLAPI bool FUNCHOOKER_DLLCALL Hook_Install(struct FuncHook* funcHook);
+	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_InstallMany(struct FuncHook** funcHooks, unsigned count);
 
-	FUNCHOOKER_DLLAPI bool FUNCHOOKER_DLLCALL Hook_Uninstall(struct FuncHook* funcHooker);
-	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_UninstallMany(struct FuncHook** funcHookers, unsigned count);
+	FUNCHOOKER_DLLAPI bool FUNCHOOKER_DLLCALL Hook_Uninstall(struct FuncHook* funcHook);
+	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_UninstallMany(struct FuncHook** funcHooks, unsigned count);
 
-	FUNCHOOKER_DLLAPI const Hook_FuncPtr FUNCHOOKER_DLLCALL Hook_GetTrampoline(struct FuncHook* funcHooker);
-	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_GetTrampolines(struct FuncHook** funcHookers, unsigned count, const void **outPtrs);
+	FUNCHOOKER_DLLAPI const Hook_FuncPtr FUNCHOOKER_DLLCALL Hook_GetTrampoline(const struct FuncHook* funcHook);
+	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_GetTrampolines(const struct FuncHook** funcHooks, unsigned count, Hook_FuncPtr *outPtrs);
 
-	FUNCHOOKER_DLLAPI void FUNCHOOKER_DLLCALL Hook_Destroy(struct FuncHooker* ctx, struct FuncHook* funcHooker);
-	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_DestroyMany(struct FuncHooker* ctx, struct FuncHook** funcHookers, unsigned count);
+	FUNCHOOKER_DLLAPI bool FUNCHOOKER_DLLCALL Hook_Destroy(struct FuncHooker* ctx, struct FuncHook* funcHook);
+	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_DestroyMany(struct FuncHooker* ctx, struct FuncHook** funcHooks, unsigned count);
 
 	FUNCHOOKER_DLLAPI struct FuncHooker* FUNCHOOKER_DLLCALL Hook_DestroyContext(void);
 #ifdef __cplusplus
