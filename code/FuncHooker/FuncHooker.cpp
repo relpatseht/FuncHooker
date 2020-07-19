@@ -50,17 +50,16 @@ namespace
 
 	using InjectionStub = InjectionStubImpl<sizeof(void*)>;
 
-	struct FreeList
+	namespace mem
 	{
-		FreeList* next;
-	};
+		struct Allocator;
+	}
 }
 
 struct FuncHooker
 {
-	FreeList* freeStubs;
-	FreeList* freeHooks;
-	void* memNext;
+	mem::Allocator* stubAlloc;
+	mem::Allocator* hookAlloc;
 };
 
 struct FuncHook
@@ -82,97 +81,268 @@ namespace
 {
 	namespace mem
 	{
-		static constexpr unsigned MAX_FUNC_HOOKER_MEM = 1 * 1024 * 1024; // 1mb
-		static constexpr unsigned FUNC_HOOKER_INITIAL_MEM = 4 * 1024; // 4kb
-		static constexpr unsigned FUNC_HOOKER_GROW_SIZE = 4 * 1024; // 4kb
+		static constexpr size_t ALLOC_RESERVE_SIZE = 1 * 1024 * 1024; // 1mb
+		static constexpr size_t ALLOC_PAGE_SIZE = 4 * 1024; // 4kb
+		static constexpr size_t TWO_GB = 2u * 1024u * 1024u * 1024u;
 
-		static void AddHooksAndStubs(FuncHooker* ctx, void* mem, unsigned memSize)
+		struct FreeList
 		{
-			static constexpr unsigned perEntrySize = sizeof(InjectionStub) + sizeof(FuncHook);
-			const unsigned entryCount = memSize / perEntrySize;
-			uint8_t* curMem = reinterpret_cast<uint8_t*>(mem);
+			FreeList* next;
+		};
 
-			assert(entryCount > 0 && "Not enough memory added for a single stub and hook");
-
-			for (unsigned entryIndex = 0; entryIndex < entryCount; ++entryIndex)
-			{
-				FreeList* const newHook = reinterpret_cast<FreeList*>(curMem);
-				newHook->next = ctx->freeHooks;
-				ctx->freeHooks = newHook;
-				curMem += sizeof(FuncHook);
-
-				FreeList* const newStub = reinterpret_cast<FreeList*>(curMem);
-				newStub->next = ctx->freeStubs;
-				ctx->freeStubs = newStub;
-				curMem += sizeof(InjectionStub);
-			}
-		}
-
-		namespace intern
+		struct Allocator
 		{
-			static void GrowFuncHooker(FuncHooker* ctx)
+			Allocator* next;
+			FreeList* freeList;
+			uintptr_t start;
+			uintptr_t pageCur;
+			uintptr_t pageEnd;
+			uintptr_t end;
+		};
+
+		static Allocator* InitAllocator(void* mem);
+
+		namespace alloc
+		{
+			static Allocator* AllocAllocator()
 			{
-				const uint8_t* const ctxMem = reinterpret_cast<uint8_t*>(ctx);
-				const uint8_t* const ctxMemEnd = ctxMem + MAX_FUNC_HOOKER_MEM;
-				uint8_t* const ctxNextMem = reinterpret_cast<uint8_t*>(ctx->memNext);
-				const size_t bytesRemaining = static_cast<size_t>(ctxNextMem - ctxMemEnd);
+				void* const allocAddr = VirtualAlloc(nullptr, ALLOC_RESERVE_SIZE, MEM_RESERVE, PAGE_NOACCESS);
 
-				assert(ctxNextMem <= ctxMemEnd && "Corrupted FuncHooker context");
-
-				if (bytesRemaining > FUNC_HOOKER_GROW_SIZE)
+				if (allocAddr)
 				{
-					uint8_t* const newMem = (uint8_t*)VirtualAlloc(ctxNextMem, FUNC_HOOKER_GROW_SIZE, MEM_COMMIT, PAGE_READWRITE);
+					void* const curPage = VirtualAlloc(allocAddr, ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
 
-					assert(newMem == ctxNextMem && "VirtualAlloc off the reserve");
+					assert(curPage == allocAddr);
 
-					AddHooksAndStubs(ctx, newMem, FUNC_HOOKER_GROW_SIZE);
-					ctx->memNext = newMem + FUNC_HOOKER_GROW_SIZE;
+					return InitAllocator(curPage);
+				}
+
+				return nullptr;
+			}
+
+			static Allocator* AllocAllocatorWithin2GB(const void* addr)
+			{
+				static constexpr size_t PAGE_MASK = ~(ALLOC_PAGE_SIZE - 1);
+				static constexpr size_t PAGES_PER_RESERVE = ALLOC_RESERVE_SIZE / ALLOC_PAGE_SIZE;
+				const void* const lowAddr = reinterpret_cast<const uint8_t*>(addr) - (TWO_GB - ALLOC_PAGE_SIZE);
+				const void* const highAddr = reinterpret_cast<const uint8_t*>(addr) + (TWO_GB - ALLOC_RESERVE_SIZE);
+				const uint8_t* const pageAddr = reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(addr)& PAGE_MASK);
+				uint8_t* curLowAddr = const_cast<uint8_t*>(pageAddr - ALLOC_RESERVE_SIZE);
+				uint8_t* curHighAddr = const_cast<uint8_t*>(pageAddr + ALLOC_PAGE_SIZE);
+				void* allocAddr;
+
+				do
+				{
+					allocAddr = VirtualAlloc(curLowAddr, ALLOC_RESERVE_SIZE, MEM_RESERVE, PAGE_NOACCESS);
+
+					if (allocAddr)
+						break;
+					else
+					{
+						allocAddr = VirtualAlloc(curHighAddr, ALLOC_RESERVE_SIZE, MEM_RESERVE, PAGE_NOACCESS);
+
+						if (allocAddr)
+							break;
+						else
+						{
+							curLowAddr -= ALLOC_PAGE_SIZE;
+							curHighAddr += ALLOC_PAGE_SIZE;
+						}
+					}
+				} while (curLowAddr >= lowAddr && curHighAddr <= highAddr);
+
+				if (allocAddr)
+				{
+					void* const curPage = VirtualAlloc(allocAddr, ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
+
+					assert(curPage == allocAddr);
+					assert(allocAddr >= lowAddr && allocAddr <= highAddr);
+
+					return InitAllocator(curPage);
+				}
+
+				return nullptr;
+			}
+
+			static void AddFreeListEntry(Allocator* alloc, size_t entrySize)
+			{
+				size_t pageRemaining = alloc->pageEnd - alloc->pageCur;
+
+				assert(alloc->pageEnd >= alloc->pageCur);
+
+				if (pageRemaining < entrySize && alloc->pageEnd < alloc->end)
+				{
+					void* const newMem = VirtualAlloc(reinterpret_cast<void*>(alloc->pageEnd), ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
+
+					if (newMem)
+					{
+						pageRemaining += ALLOC_PAGE_SIZE;
+						alloc->pageEnd += ALLOC_PAGE_SIZE;
+					}
+				}
+
+				if (pageRemaining >= entrySize)
+				{
+					FreeList* const newEntry = reinterpret_cast<FreeList*>(alloc->pageCur);
+
+					alloc->pageCur += entrySize;
+					newEntry->next = alloc->freeList;
+					alloc->freeList = newEntry;
 				}
 			}
 
-			template<typename T, FreeList * (FuncHooker:: * freeList)>
-			static T* Allocate(FuncHooker* ctx)
+			template<typename T>
+			static T* Allocate(Allocator* alloc)
 			{
-				if (!ctx->*freeList)
-					GrowFuncHooker(ctx);
-
-				if (ctx->*freeList)
+				if (!alloc->freeList)
 				{
-					T* const newItem = reinterpret_cast<T*>(ctx->*freeList);
+					AddFreeListEntry(alloc, sizeof(T));
+				}
 
-					(ctx->*freeList) = (ctx->*freeList)->next;
+				if (alloc->freeList)
+				{
+					T* const newT = reinterpret_cast<T*>(alloc->freeList);
 
-					return newItem;
+					alloc->freeList = alloc->freeList->next;
+
+					return newT;
 				}
 
 				return nullptr;
 			}
 		}
 
-		static FuncHook* AllocateHook(FuncHooker* ctx)
+		namespace free
 		{
-			return intern::Allocate<FuncHook, &FuncHooker::freeHooks>(ctx);
+			static void Free(Allocator* alloc, void* mem)
+			{
+				const uintptr_t addr = reinterpret_cast<uintptr_t>(mem);
+
+				while (alloc)
+				{
+					if (addr >= alloc->start && addr <= alloc->end)
+					{
+						FreeList* const newEntry = reinterpret_cast<FreeList*>(mem);
+
+						newEntry->next = alloc->freeList;
+						alloc->freeList = newEntry;
+						return;
+					}
+
+					alloc = alloc->next;
+				}
+
+				assert(0 && "Memory not from any allocator. Corrupt.");
+			}
 		}
 
-		static InjectionStub* AllocateStub(FuncHooker* ctx)
+		static Allocator* InitAllocator(void* mem)
 		{
-			return intern::Allocate<InjectionStub, &FuncHooker::freeStubs>(ctx);
+			Allocator* const allocator = reinterpret_cast<Allocator*>(mem);
+
+			allocator->start = reinterpret_cast<uintptr_t>(mem);
+			allocator->pageCur = allocator->start + sizeof(Allocator);
+			allocator->pageEnd = allocator->start + ALLOC_PAGE_SIZE;
+			allocator->end = allocator->start + ALLOC_RESERVE_SIZE;
+			allocator->next = nullptr;
+			allocator->freeList = nullptr;
+
+			return allocator;
 		}
 
-		static void DeallocateHook(FuncHooker* ctx, void *hookMem)
+		static FuncHook* AllocateHook(Allocator** hookAllocHeadPtr)
 		{
-			FreeList* const newItem = reinterpret_cast<FreeList*>(hookMem);
+			Allocator* const hookAllocHead = *hookAllocHeadPtr;
+			Allocator* curAlloc = hookAllocHead;
 
-			newItem->next = ctx->freeHooks;
-			ctx->freeHooks = newItem;
+			while (curAlloc)
+			{
+				FuncHook* const newHook = alloc::Allocate<FuncHook>(curAlloc);
+
+				if (newHook)
+					return newHook;
+
+				curAlloc = curAlloc->next;
+			}
+
+			curAlloc = alloc::AllocAllocator();
+
+			if (curAlloc)
+			{
+				curAlloc->next = hookAllocHead;
+				*hookAllocHeadPtr = curAlloc;
+
+				return alloc::Allocate<FuncHook>(curAlloc);
+			}
+
+			return nullptr;
 		}
 
-		static void DeallocateStub(FuncHooker* ctx, void *stubMem)
+		static InjectionStub* AllocateStub(Allocator** stubAllocHeadPtr, const void *hintAddr)
 		{
-			FreeList* const newItem = reinterpret_cast<FreeList*>(stubMem);
+			const uintptr_t baseAddr = reinterpret_cast<uintptr_t>(hintAddr);
+			const uintptr_t lowAddr = baseAddr - TWO_GB;
+			const uintptr_t highAddr = baseAddr + (TWO_GB - sizeof(InjectionStub));
+			Allocator* const stubAllocHead = *stubAllocHeadPtr;
+			Allocator* curAlloc = stubAllocHead;
 
-			newItem->next = ctx->freeStubs;
-			ctx->freeStubs = newItem;
+			while (curAlloc)
+			{
+				if (curAlloc->start >= lowAddr && curAlloc->end < highAddr)
+				{
+					InjectionStub* const newStub = alloc::Allocate<InjectionStub>(curAlloc);
+
+					if (newStub)
+						return newStub;
+				}
+
+				curAlloc = curAlloc->next;
+			}
+
+			curAlloc = alloc::AllocAllocatorWithin2GB(hintAddr);
+
+			if (curAlloc)
+			{
+				curAlloc->next = stubAllocHead;
+				*stubAllocHeadPtr = curAlloc;
+
+				return alloc::Allocate<InjectionStub>(curAlloc);
+			}
+
+			// Now we give up on being within 2gb
+
+			curAlloc = stubAllocHead;
+			while (curAlloc)
+			{
+				InjectionStub* const newStub = alloc::Allocate<InjectionStub>(curAlloc);
+
+				if (newStub)
+					return newStub;
+
+				curAlloc = curAlloc->next;
+			}
+
+			curAlloc = alloc::AllocAllocator();
+
+			if (curAlloc)
+			{
+				curAlloc->next = stubAllocHead;
+				*stubAllocHeadPtr = curAlloc;
+
+				return alloc::Allocate<InjectionStub>(curAlloc);
+			}
+
+			return nullptr;
+		}
+
+		static void DeallocateHook(Allocator *hookAlloc, void *hookMem)
+		{
+			free::Free(hookAlloc, hookMem);
+		}
+
+		static void DeallocateStub(Allocator* stubAlloc, void *stubMem)
+		{
+			free::Free(stubAlloc, stubMem);
 		}
 	}
 
@@ -956,6 +1126,14 @@ namespace
 			}
 		};
 
+		static __forceinline uintptr_t* ContextIP(CONTEXT* context)
+		{
+#ifdef _X86_
+			return &context->Eip;
+#else //#ifdef _X86_
+			return &context->Rip;
+#endif //#else //#ifdef _X86_
+		}
 
 		static void RelocateMovedIPs(HANDLE* threadList, unsigned threadCount, const FuncHook** hooks, unsigned hookCount)
 		{
@@ -963,11 +1141,12 @@ namespace
 			{
 				HANDLE thread = threadList[threadIndex];
 				CONTEXT threadContext{};
+				uintptr_t* const ctxIP = ContextIP(&threadContext);
 
 				threadContext.ContextFlags = CONTEXT_CONTROL;
 				GetThreadContext(thread, &threadContext);
 
-				const uintptr_t ip = threadContext.Rip;
+				const uintptr_t ip = *ctxIP;
 
 				for (unsigned hookIndex = 0; hookIndex < hookCount; ++hookIndex)
 				{
@@ -981,6 +1160,7 @@ namespace
 						const uintptr_t destOffset = ip - overwriteStart;
 
 						threadContext.Rip = destStart + destOffset;
+						*ctxIP = destStart + destOffset;
 						SetThreadContext(thread, &threadContext);
 						break;
 					}
@@ -994,8 +1174,8 @@ extern "C"
 {
 	struct FuncHooker* Hook_CreateContext(void)
 	{
-		uint8_t* const ctxMemStart = (uint8_t*)VirtualAlloc(nullptr, mem::MAX_FUNC_HOOKER_MEM, MEM_RESERVE, PAGE_NOACCESS);
-		uint8_t *memCur = (uint8_t*)VirtualAlloc(ctxMemStart, mem::FUNC_HOOKER_INITIAL_MEM, MEM_COMMIT, PAGE_READWRITE);
+		uint8_t* const ctxMemStart = (uint8_t*)VirtualAlloc(nullptr, mem::ALLOC_RESERVE_SIZE, MEM_RESERVE, PAGE_NOACCESS);
+		uint8_t *memCur = (uint8_t*)VirtualAlloc(ctxMemStart, mem::ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
 		
 		if (memCur)
 		{
@@ -1003,11 +1183,16 @@ extern "C"
 
 			assert(memCur == ctxMemStart && "Virtual alloc commit off reserve.");
 
-			ctx->memNext = memCur + mem::FUNC_HOOKER_INITIAL_MEM;
-			ctx->freeHooks = nullptr;
-			ctx->freeStubs = nullptr;
+			// Since we're offseting the mem for allocator init, we need to 
+			// pull the page end and end back to page aligned
+			ctx->hookAlloc = mem::InitAllocator(memCur + sizeof(FuncHooker));
+			ctx->hookAlloc->pageEnd -= sizeof(FuncHooker);
+			ctx->hookAlloc->end -= sizeof(FuncHooker);
 
-			mem::AddHooksAndStubs(ctx, memCur + sizeof(FuncHooker), mem::FUNC_HOOKER_INITIAL_MEM - sizeof(FuncHooker));
+			assert((ctx->hookAlloc->pageEnd & (mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->pageEnd);
+			assert((ctx->hookAlloc->end & (mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->end);
+
+			ctx->stubAlloc = nullptr;
 
 			return ctx;
 		}
@@ -1042,18 +1227,13 @@ extern "C"
 
 			if (funcBody)
 			{
-				FuncHook* const hook = mem::AllocateHook(ctx);
-				void* const stubMem = mem::AllocateStub(ctx);
-
-				stubMem needs to be in executable memory, and preferably very close to the function body.
-				Need to adjust allocate stub/memory allocation in general to have list of available pages
-				within +- 2gb of mem to select correct page.
-				Also need to mark stubMem as writeable during initalization, then back to read/execute only.
+				FuncHook* const hook = mem::AllocateHook(&ctx->hookAlloc);
+				void* const stubMem = mem::AllocateStub(&ctx->stubAlloc, funcBody);
 
 				if (!create::InitializeHook(disasm, InjectionPtrs[hookIndex], funcBody, stubMem, hook))
 				{
-					mem::DeallocateStub(ctx, stubMem);
-					mem::DeallocateHook(ctx, hook);
+					mem::DeallocateStub(ctx->hookAlloc, stubMem);
+					mem::DeallocateHook(ctx->stubAlloc, hook);
 					outPtrs[hookIndex] = nullptr;
 				}
 				else
