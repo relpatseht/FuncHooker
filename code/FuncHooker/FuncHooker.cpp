@@ -212,30 +212,6 @@ namespace
 			}
 		}
 
-		namespace free
-		{
-			static void Free(Allocator* alloc, void* mem)
-			{
-				const uintptr_t addr = reinterpret_cast<uintptr_t>(mem);
-
-				while (alloc)
-				{
-					if (addr >= alloc->start && addr <= alloc->end)
-					{
-						FreeList* const newEntry = reinterpret_cast<FreeList*>(mem);
-
-						newEntry->next = alloc->freeList;
-						alloc->freeList = newEntry;
-						return;
-					}
-
-					alloc = alloc->next;
-				}
-
-				assert(0 && "Memory not from any allocator. Corrupt.");
-			}
-		}
-
 		static void UnprotectStubAllocator(Allocator* curAlloc)
 		{
 			void* const memStart = reinterpret_cast<void*>(curAlloc->start);
@@ -363,12 +339,42 @@ namespace
 
 		static void DeallocateHook(Allocator *hookAlloc, void *hookMem)
 		{
-			free::Free(hookAlloc, hookMem);
+			const uintptr_t addr = reinterpret_cast<uintptr_t>(hookMem);
+
+			while (hookAlloc)
+			{
+				if (addr >= hookAlloc->start && addr <= hookAlloc->end)
+				{
+					FreeList* const newEntry = reinterpret_cast<FreeList*>(hookMem);
+
+					newEntry->next = hookAlloc->freeList;
+					hookAlloc->freeList = newEntry;
+					return;
+				}
+
+				hookAlloc = hookAlloc->next;
+			}
 		}
 
 		static void DeallocateStub(Allocator* stubAlloc, void *stubMem)
 		{
-			free::Free(stubAlloc, stubMem);
+			const uintptr_t addr = reinterpret_cast<uintptr_t>(stubMem);
+
+			while (stubAlloc)
+			{
+				if (addr >= stubAlloc->start && addr <= stubAlloc->end)
+				{
+					FreeList* const newEntry = reinterpret_cast<FreeList*>(stubMem);
+
+					UnprotectStubAllocator(stubAlloc);
+					newEntry->next = stubAlloc->freeList;
+					stubAlloc->freeList = newEntry;
+					ProtectStubAllocator(stubAlloc);
+					return;
+				}
+
+				stubAlloc = stubAlloc->next;
+			}
 		}
 	}
 
