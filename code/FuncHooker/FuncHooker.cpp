@@ -104,6 +104,18 @@ namespace
 
 		namespace alloc
 		{
+			static __forceinline uintptr_t RoundDownPageBoundary(uintptr_t val)
+			{
+				static constexpr uintptr_t PAGE_MASK = ~(ALLOC_PAGE_SIZE - 1);
+
+				return val & PAGE_MASK;
+			}
+
+			static __forceinline uintptr_t RoundUpPageBoundary(uintptr_t val)
+			{
+				return RoundDownPageBoundary(val + (ALLOC_PAGE_SIZE - 1));
+			}
+
 			static Allocator* AllocAllocator()
 			{
 				void* const allocAddr = VirtualAlloc(nullptr, ALLOC_RESERVE_SIZE, MEM_RESERVE, PAGE_NOACCESS);
@@ -122,11 +134,10 @@ namespace
 
 			static Allocator* AllocAllocatorWithin2GB(const void* addr)
 			{
-				static constexpr size_t PAGE_MASK = ~(ALLOC_PAGE_SIZE - 1);
 				static constexpr size_t PAGES_PER_RESERVE = ALLOC_RESERVE_SIZE / ALLOC_PAGE_SIZE;
 				const void* const lowAddr = reinterpret_cast<const uint8_t*>(addr) - (TWO_GB - ALLOC_PAGE_SIZE);
 				const void* const highAddr = reinterpret_cast<const uint8_t*>(addr) + (TWO_GB - ALLOC_RESERVE_SIZE);
-				const uint8_t* const pageAddr = reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(addr)& PAGE_MASK);
+				const uint8_t* const pageAddr = reinterpret_cast<uint8_t*>(RoundDownPageBoundary(reinterpret_cast<uintptr_t>(addr)));
 				uint8_t* curLowAddr = const_cast<uint8_t*>(pageAddr - ALLOC_RESERVE_SIZE);
 				uint8_t* curHighAddr = const_cast<uint8_t*>(pageAddr + ALLOC_PAGE_SIZE);
 				void* allocAddr;
@@ -164,24 +175,30 @@ namespace
 				return nullptr;
 			}
 
-			static void AddFreeListEntry(Allocator* alloc, size_t entrySize)
+			static void AddFreeListEntries(Allocator* alloc, size_t entrySize, unsigned entryCount)
 			{
+				const size_t requestedMemory = entrySize * entryCount;
 				size_t pageRemaining = alloc->pageEnd - alloc->pageCur;
 
 				assert(alloc->pageEnd >= alloc->pageCur);
 
-				if (pageRemaining < entrySize && alloc->pageEnd < alloc->end)
+				if (pageRemaining < requestedMemory && alloc->pageEnd < alloc->end)
 				{
-					void* const newMem = VirtualAlloc(reinterpret_cast<void*>(alloc->pageEnd), ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
+					const size_t availableMemory = alloc->end - alloc->pageEnd;
+					const size_t neededMemory = requestedMemory - pageRemaining;
+					const size_t neededPageMemory = RoundUpPageBoundary(neededMemory);
+					const size_t allocSize = std::min(neededPageMemory, availableMemory);
+					void* const newMem = VirtualAlloc(reinterpret_cast<void*>(alloc->pageEnd), allocSize, MEM_COMMIT, PAGE_READWRITE);
 
 					if (newMem)
 					{
-						pageRemaining += ALLOC_PAGE_SIZE;
-						alloc->pageEnd += ALLOC_PAGE_SIZE;
+						pageRemaining += allocSize;
+						alloc->pageEnd += allocSize;
+						assert(alloc->pageEnd <= alloc->end);
 					}
 				}
 
-				if (pageRemaining >= entrySize)
+				while (pageRemaining >= entrySize)
 				{
 					FreeList* const newEntry = reinterpret_cast<FreeList*>(alloc->pageCur);
 
@@ -192,44 +209,51 @@ namespace
 			}
 
 			template<typename T>
-			static T* Allocate(Allocator* alloc)
+			static unsigned Allocate(Allocator* alloc, T** outPtrs, unsigned count)
 			{
-				if (!alloc->freeList)
+				unsigned allocated = 0;
+				while (alloc->freeList && allocated < count)
 				{
-					AddFreeListEntry(alloc, sizeof(T));
-				}
-
-				if (alloc->freeList)
-				{
-					T* const newT = reinterpret_cast<T*>(alloc->freeList);
-
+					outPtrs[allocated++] = reinterpret_cast<T*>(alloc->freeList);
 					alloc->freeList = alloc->freeList->next;
-
-					return newT;
 				}
 
-				return nullptr;
+				if(allocated < count)
+				{
+					AddFreeListEntries(alloc, sizeof(T), count - allocated);
+
+					while (alloc->freeList && allocated < count)
+					{
+						outPtrs[allocated++] = reinterpret_cast<T*>(alloc->freeList);
+						alloc->freeList = alloc->freeList->next;
+					}
+				}
+
+				return allocated;
 			}
 		}
 
-		static void UnprotectStubAllocator(Allocator* curAlloc)
+		namespace protect
 		{
-			void* const memStart = reinterpret_cast<void*>(curAlloc->start);
-			const size_t length = curAlloc->pageEnd - curAlloc->start;
-			DWORD oldProtect;
+			static void UnprotectStubAllocator(Allocator* curAlloc)
+			{
+				void* const memStart = reinterpret_cast<void*>(curAlloc->start);
+				const size_t length = curAlloc->pageEnd - curAlloc->start;
+				DWORD oldProtect;
 
-			bool success = VirtualProtect(memStart, length, PAGE_READWRITE, &oldProtect);
-			assert(success && "Mem unprotection failed.");
-		}
+				bool success = VirtualProtect(memStart, length, PAGE_READWRITE, &oldProtect);
+				assert(success && "Mem unprotection failed.");
+			}
 
-		static void ProtectStubAllocator(Allocator* curAlloc)
-		{
-			void* const memStart = reinterpret_cast<void*>(curAlloc->start);
-			const size_t length = curAlloc->pageEnd - curAlloc->start;
-			DWORD oldProtect;
+			static void ProtectStubAllocator(Allocator* curAlloc)
+			{
+				void* const memStart = reinterpret_cast<void*>(curAlloc->start);
+				const size_t length = curAlloc->pageEnd - curAlloc->start;
+				DWORD oldProtect;
 
-			bool success = VirtualProtect(memStart, length, PAGE_EXECUTE_READ, &oldProtect);
-			assert(success && "Mem protection failed.");
+				bool success = VirtualProtect(memStart, length, PAGE_EXECUTE_READ, &oldProtect);
+				assert(success && "Mem protection failed.");
+			}
 		}
 
 		static Allocator* InitAllocator(void* mem)
@@ -246,32 +270,39 @@ namespace
 			return allocator;
 		}
 
-		static FuncHook* AllocateHook(Allocator** hookAllocHeadPtr)
+		static unsigned AllocateHooks(Allocator** hookAllocHeadPtr, FuncHook **outHooks, unsigned count)
 		{
 			Allocator* const hookAllocHead = *hookAllocHeadPtr;
 			Allocator* curAlloc = hookAllocHead;
+			unsigned allocated = 0;
 
-			while (curAlloc)
+			while (curAlloc && allocated < count)
 			{
-				FuncHook* const newHook = alloc::Allocate<FuncHook>(curAlloc);
-
-				if (newHook)
-					return newHook;
-
+				allocated += alloc::Allocate<FuncHook>(curAlloc, outHooks + allocated, count - allocated);
 				curAlloc = curAlloc->next;
 			}
 
-			curAlloc = alloc::AllocAllocator();
-
-			if (curAlloc)
+			while (allocated < count)
 			{
-				curAlloc->next = hookAllocHead;
-				*hookAllocHeadPtr = curAlloc;
+				curAlloc = alloc::AllocAllocator();
 
-				return alloc::Allocate<FuncHook>(curAlloc);
+				if (!curAlloc)
+					break;
+				else
+				{
+					curAlloc->next = hookAllocHead;
+					*hookAllocHeadPtr = curAlloc;
+
+					allocated += alloc::Allocate<FuncHook>(curAlloc, outHooks + allocated, count - allocated);
+				}
 			}
 
-			return nullptr;
+			return allocated;
+		}
+
+		static void AllocateHooks(Allocator* hookAllocHeadPtr, FuncHook** outHooks, unsigned hookCount)
+		{
+
 		}
 
 		static InjectionStub* AllocateStub(Allocator** stubAllocHeadPtr, const void *hintAddr)
@@ -1253,9 +1284,16 @@ extern "C"
 		else
 			ZydisDecoderInit(&disasm, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_ADDRESS_WIDTH_32);
 
+		void** const funcBodies = (void**)_malloca(sizeof(void*) * count);
+		FuncHook** const hooks = (FuncHook**)_malloca(sizeof(FuncHook*) * count);
+		InjectionStub** const stubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
+
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
-			void* const funcBody = create::FindFunctionBody(disasm, FunctionPtrs[hookIndex]);
+			funcBodies[hookIndex] = create::FindFunctionBody(disasm, FunctionPtrs[hookIndex]);
+		}
+
+		mem::AllocateHooks(&ctx->hookAlloc, hooks, count);
 
 			if (funcBody)
 			{
