@@ -259,14 +259,14 @@ namespace
 						curAlloc->next = allocHead;
 						*allocHeadPtr = curAlloc;
 
-						allocated += alloc::Allocate<FuncHook>(curAlloc, outPtrs + allocated, count - allocated);
+						allocated += alloc::Allocate<T>(curAlloc, outPtrs + allocated, count - allocated);
 					}
 				}
 
 				return allocated;
 			}
 
-			static unsigned GatherStubIndicesWithin2GBOfAllocator(Allocator* alloc, const InjectionStub** stubs, const void** hintAddrs, unsigned stubCount, unsigned* outIndices)
+			static unsigned GatherStubIndicesWithin2GBOfAllocator(Allocator* alloc, InjectionStub** stubs, void** hintAddrs, unsigned stubCount, unsigned* outIndices)
 			{
 				unsigned validCount = 0;
 
@@ -368,7 +368,7 @@ namespace
 			return alloc::AllocateMany(hookAllocHeadPtr, outHooks, count);
 		}
 
-		static unsigned AllocateStubs(Allocator** stubAllocHeadPtr, InjectionStub **outStubs, const void **hintAddrs, unsigned count)
+		static unsigned AllocateStubs(Allocator** stubAllocHeadPtr, InjectionStub **outStubs, void **hintAddrs, unsigned count)
 		{
 			unsigned* allocIndices = (unsigned*)_malloca(sizeof(unsigned) * count);
 			InjectionStub** tempStubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
@@ -427,10 +427,10 @@ namespace
 							for (unsigned tempIndex = 0; tempIndex < allocedStubs; ++tempIndex)
 							{
 								InjectionStub* const newStub = tempStubs[tempIndex];
-								const unsigned stubIndex = allocIndices[tempIndex];
+								const unsigned realStubIndex = allocIndices[tempIndex];
 
-								assert(outStubs[stubIndex] == nullptr);
-								outStubs[stubIndex] = newStub;
+								assert(outStubs[realStubIndex] == nullptr);
+								outStubs[realStubIndex] = newStub;
 							}
 
 							allocated += allocedStubs;
@@ -469,7 +469,7 @@ namespace
 			return allocated;
 		}
 
-		static unsigned GatherUniqueAllocators(const Allocator* headAlloc, const Allocator **outAllocs, InjectionStub** list, unsigned count)
+		static unsigned GatherUniqueAllocators(Allocator* headAlloc, Allocator **outAllocs, InjectionStub** list, unsigned count)
 		{
 			unsigned uniqueAllocCount = 0;
 
@@ -481,7 +481,7 @@ namespace
 
 				if (listCur)
 				{
-					const Allocator* curAlloc = headAlloc;
+					Allocator* curAlloc = headAlloc;
 					const uintptr_t listCurAddr = reinterpret_cast<uintptr_t>(listCur);
 
 					while (curAlloc)
@@ -504,13 +504,13 @@ namespace
 			return uniqueAllocCount;
 		}
 
-		static void ProtectStubAllocList(const Allocator** stubAllocs, unsigned stubAllocCount)
+		static void ProtectStubAllocList(Allocator** stubAllocs, unsigned stubAllocCount)
 		{
 			for (unsigned allocIndex = 0; allocIndex < stubAllocCount; ++allocIndex)
 				protect::ProtectStubAllocator(stubAllocs[allocIndex]);
 		}
 
-		static void UnprotectStubAllocList(const Allocator** stubAllocs, unsigned stubAllocCount)
+		static void UnprotectStubAllocList(Allocator** stubAllocs, unsigned stubAllocCount)
 		{
 			for (unsigned allocIndex = 0; allocIndex < stubAllocCount; ++allocIndex)
 				protect::UnprotectStubAllocator(stubAllocs[allocIndex]);
@@ -989,9 +989,9 @@ namespace
 
 	namespace modify
 	{
-		static unsigned GatherPrivilegePages(const FuncHook **hookPtrs, unsigned count, bool forInstall, const void** outPages)
+		static unsigned GatherPrivilegePages(FuncHook **hookPtrs, unsigned count, bool forInstall, const void** outPages)
 		{
-			unsigned validCount;
+			unsigned validCount = 0;
 
 			for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 			{
@@ -1013,7 +1013,7 @@ namespace
 			const void** newEnd = std::unique(outPages, outPages + validCount);
 
 			assert(newEnd - outPages <= validCount && newEnd >= outPages);
-			static_cast<unsigned>(newEnd - outPages);
+			return static_cast<unsigned>(newEnd - outPages);
 		}
 
 		struct RAIIReadWriteBlock
@@ -1211,7 +1211,7 @@ namespace
 			static bool GatherProcessThreads(const DWORD procId, const void *procInfoSnapshotMem, HANDLE** inoutThreadList, unsigned* inoutMaxThreadCount, unsigned *inoutThreadCount)
 			{
 				const win_internal::SYSTEM_PROCESS_INFORMATION* procInfoSnapshot = reinterpret_cast<const win_internal::SYSTEM_PROCESS_INFORMATION*>(procInfoSnapshotMem);
-				const HANDLE procIdHandle = reinterpret_cast<HANDLE>(procId);
+				const HANDLE procIdHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(procId));
 
 				while (procInfoSnapshot && procInfoSnapshot->uUniqueProcessId != procIdHandle)
 				{
@@ -1249,7 +1249,7 @@ namespace
 					for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
 					{
 						const win_internal::SYSTEM_THREAD_INFORMATION& threadInfo = procInfo.Threads[threadIndex];
-						const DWORD threadId = reinterpret_cast<DWORD>(threadInfo.ClientId.UniqueThread);
+						const DWORD threadId = static_cast<DWORD>(reinterpret_cast<uintptr_t>(threadInfo.ClientId.UniqueThread));
 						const HANDLE threadHandle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, false, threadId);
 
 						assert(threadInfo.ClientId.UniqueProcess == procIdHandle);
@@ -1331,7 +1331,7 @@ namespace
 #endif //#else //#ifdef _X86_
 		}
 
-		static void RelocateMovedIPs(HANDLE* threadList, unsigned threadCount, const FuncHook** hooks, unsigned hookCount)
+		static void RelocateMovedIPs(HANDLE* threadList, unsigned threadCount, FuncHook** hooks, unsigned hookCount)
 		{
 			for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
 			{
@@ -1466,7 +1466,7 @@ extern "C"
 		mem::DeallocateHooks(ctx->hookAlloc, failedHooks, failedHookCount);
 		mem::DeallocateStubs(ctx->stubAlloc, failedStubs, failedStubCount);
 
-		const mem::Allocator** stubAllocs = (mem::Allocator**)_malloca(sizeof(mem::Allocator*) * stubCount);
+		mem::Allocator** const stubAllocs = (mem::Allocator**)_malloca(sizeof(mem::Allocator*) * stubCount);
 		const unsigned stubAllocCount = mem::GatherUniqueAllocators(ctx->stubAlloc, stubAllocs, stubs, stubCount);
 		mem::ProtectStubAllocList(stubAllocs, stubAllocCount);
 
@@ -1662,7 +1662,7 @@ extern "C"
 		mem::ProtectStubAllocList(stubAllocList, stubAllocCount);
 
 		std::sort(proxyTargets, proxyTargets + proxyTargetCount);
-		proxyTargetCount = std::unique(proxyTargets, proxyTargets + proxyTargetCount) - proxyTargets;
+		proxyTargetCount = static_cast<unsigned>(std::unique(proxyTargets, proxyTargets + proxyTargetCount) - proxyTargets);
 
 		for (unsigned proxyPageIndex = 0; proxyPageIndex < proxyTargetCount; ++proxyPageIndex)
 		{
@@ -1691,6 +1691,8 @@ extern "C"
 		_freea(stubAllocList);
 		_freea(proxyTargets);
 		_freea(stubs);
+
+		return count;
 	}
 
 	void Hook_DestroyContext(struct FuncHooker* ctx)
