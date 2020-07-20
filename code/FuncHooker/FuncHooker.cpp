@@ -1663,27 +1663,25 @@ extern "C"
 
 		std::sort(proxyTargets, proxyTargets + proxyTargetCount);
 		proxyTargetCount = static_cast<unsigned>(std::unique(proxyTargets, proxyTargets + proxyTargetCount) - proxyTargets);
+		DWORD* const oldPrivs = (DWORD*)_malloca(sizeof(DWORD) * proxyTargetCount);
 
-		for (unsigned proxyPageIndex = 0; proxyPageIndex < proxyTargetCount; ++proxyPageIndex)
 		{
-			DWORD oldProtect;
-			VirtualProtect(reinterpret_cast<void*>(proxyTargets[proxyPageIndex]), 4096, PAGE_EXECUTE_READWRITE, &oldProtect);
-		}
+			// We need to make every function page read/writeable, then make sure none of the
+			// functions are executing while we install the hooks. It's best to do that ASAP,
+			// so make our thread time critical while we do it.
+			modify::RAIITimeCriticalBlock raiiTimeCritical;
+			modify::RAIISingleThreadBlock raiiSingleThreaded;
+			modify::RAIIReadWriteBlock raiiReadWrite(reinterpret_cast<const void**>(proxyTargets), oldPrivs, proxyTargetCount);
 
-		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
-		{
-			FuncHook* const hook = funcHooks[hookIndex];
-
-			if(hook && hook->proxyBackupSize)
+			for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 			{
-				std::memcpy(const_cast<void*>(hook->injectionJumpTarget), hook->proxyBackup, hook->proxyBackupSize);
-			}
-		}
+				FuncHook* const hook = funcHooks[hookIndex];
 
-		for (unsigned proxyPageIndex = 0; proxyPageIndex < proxyTargetCount; ++proxyPageIndex)
-		{
-			DWORD oldProtect;
-			VirtualProtect(reinterpret_cast<void*>(proxyTargets[proxyPageIndex]), 4096, PAGE_EXECUTE_READ, &oldProtect);
+				if (hook && hook->proxyBackupSize)
+				{
+					std::memcpy(const_cast<void*>(hook->injectionJumpTarget), hook->proxyBackup, hook->proxyBackupSize);
+				}
+			}
 		}
 
 		mem::DeallocateHooks(ctx->hookAlloc, funcHooks, count);
