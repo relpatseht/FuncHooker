@@ -291,7 +291,7 @@ namespace
 
 		namespace protect
 		{
-			static void UnprotectStubAllocator(Allocator* curAlloc)
+			static void UnprotectStubAllocator(const Allocator* curAlloc)
 			{
 				void* const memStart = reinterpret_cast<void*>(curAlloc->start);
 				const size_t length = curAlloc->pageEnd - curAlloc->start;
@@ -301,7 +301,7 @@ namespace
 				assert(success && "Mem unprotection failed.");
 			}
 
-			static void ProtectStubAllocator(Allocator* curAlloc)
+			static void ProtectStubAllocator(const Allocator* curAlloc)
 			{
 				void* const memStart = reinterpret_cast<void*>(curAlloc->start);
 				const size_t length = curAlloc->pageEnd - curAlloc->start;
@@ -309,6 +309,43 @@ namespace
 
 				bool success = VirtualProtect(memStart, length, PAGE_EXECUTE_READ, &oldProtect);
 				assert(success && "Mem protection failed.");
+			}
+		}
+
+		namespace free
+		{
+			template<typename T>
+			static void Free(Allocator* headAlloc, T** list, unsigned count)
+			{
+				std::sort(list, list + count);
+
+				for (unsigned listIndex = 0; listIndex < count;)
+				{
+					void* listCur = list[listIndex];
+
+					if (listCur)
+					{
+						Allocator* curAlloc = headAlloc;
+						const uintptr_t listCurAddr = reinterpret_cast<uintptr_t>(listCur);
+
+						while (curAlloc)
+						{
+							if (listCurAddr >= curAlloc->start && listCurAddr < curAlloc->end)
+								break;
+						}
+
+						assert(curAlloc && "List item not from any allocator");
+
+						do
+						{
+							FreeList* const newFreeItem = reinterpret_cast<FreeList*>(listCur);
+							newFreeItem->next = curAlloc->freeList;
+							curAlloc->freeList = newFreeItem;
+
+							listCur = list[++listIndex];
+						} while (listIndex < count && reinterpret_cast<uintptr_t>(listCur) < curAlloc->end);
+					}
+				}
 			}
 		}
 
@@ -432,44 +469,61 @@ namespace
 			return allocated;
 		}
 
-		static void DeallocateHook(Allocator *hookAlloc, void *hookMem)
+		static unsigned GatherUniqueAllocators(const Allocator* headAlloc, const Allocator **outAllocs, InjectionStub** list, unsigned count)
 		{
-			const uintptr_t addr = reinterpret_cast<uintptr_t>(hookMem);
+			unsigned uniqueAllocCount = 0;
 
-			while (hookAlloc)
+			std::sort(list, list + count);
+
+			for (unsigned listIndex = 0; listIndex < count;)
 			{
-				if (addr >= hookAlloc->start && addr <= hookAlloc->end)
+				const void* listCur = list[listIndex];
+
+				if (listCur)
 				{
-					FreeList* const newEntry = reinterpret_cast<FreeList*>(hookMem);
+					const Allocator* curAlloc = headAlloc;
+					const uintptr_t listCurAddr = reinterpret_cast<uintptr_t>(listCur);
 
-					newEntry->next = hookAlloc->freeList;
-					hookAlloc->freeList = newEntry;
-					return;
+					while (curAlloc)
+					{
+						if (listCurAddr >= curAlloc->start && listCurAddr < curAlloc->end)
+							break;
+					}
+
+					assert(curAlloc && "List item not from any allocator");
+
+					do
+					{
+						listCur = list[++listIndex];
+					} while (listIndex < count && reinterpret_cast<uintptr_t>(listCur) < curAlloc->end);
+
+					outAllocs[uniqueAllocCount++] = curAlloc;
 				}
-
-				hookAlloc = hookAlloc->next;
 			}
+
+			return uniqueAllocCount;
 		}
 
-		static void DeallocateStub(Allocator* stubAlloc, void *stubMem)
+		static void ProtectStubAllocList(const Allocator** stubAllocs, unsigned stubAllocCount)
 		{
-			const uintptr_t addr = reinterpret_cast<uintptr_t>(stubMem);
+			for (unsigned allocIndex = 0; allocIndex < stubAllocCount; ++allocIndex)
+				protect::ProtectStubAllocator(stubAllocs[allocIndex]);
+		}
 
-			while (stubAlloc)
-			{
-				if (addr >= stubAlloc->start && addr <= stubAlloc->end)
-				{
-					FreeList* const newEntry = reinterpret_cast<FreeList*>(stubMem);
+		static void UnprotectStubAllocList(const Allocator** stubAllocs, unsigned stubAllocCount)
+		{
+			for (unsigned allocIndex = 0; allocIndex < stubAllocCount; ++allocIndex)
+				protect::UnprotectStubAllocator(stubAllocs[allocIndex]);
+		}
 
-					UnprotectStubAllocator(stubAlloc);
-					newEntry->next = stubAlloc->freeList;
-					stubAlloc->freeList = newEntry;
-					ProtectStubAllocator(stubAlloc);
-					return;
-				}
+		static void DeallocateHooks(Allocator *hookAlloc, FuncHook **hooks, unsigned count)
+		{
+			free::Free(hookAlloc, hooks, count);
+		}
 
-				stubAlloc = stubAlloc->next;
-			}
+		static void DeallocateStubs(Allocator* stubAlloc, InjectionStub **stubs, unsigned count)
+		{
+			free::Free(stubAlloc, stubs, count);
 		}
 	}
 
@@ -1360,24 +1414,31 @@ extern "C"
 		}
 
 		mem::AllocateHooks(&ctx->hookAlloc, hooks, count);
-		mem::AllocateStubs(&ctx->hookAlloc, stubs, funcBodies, count);
+		const unsigned stubCount = mem::AllocateStubs(&ctx->stubAlloc, stubs, funcBodies, count);
 
-		unsigned failedCount = 0;
+		unsigned failedHookCount = 0;
+		unsigned failedStubCount = 0;
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
 			FuncHook* const hook = hooks[hookIndex];
 			InjectionStub* const stub = stubs[hookIndex];
 
 			if (!(hook || stub))
+			{
+				if (hook)
+					failedHooks[failedHookCount++] = hook;
+				else
+					failedStubs[failedStubCount++] = stub;
+
 				outPtrs[hookIndex] = nullptr;
+			}
 			else
 			{
 				if (!create::InitializeHook(disasm, InjectionPtrs[hookIndex], funcBodies[hookIndex], stub, hook))
 				{
-					failedHooks[failedCount] = hook;
-					failedStubs[failedCount] = stub;
+					failedHooks[failedHookCount++] = hook;
+					failedStubs[failedStubCount++] = stub;
 					outPtrs[hookIndex] = nullptr;
-					++failedCount;
 				}
 				else
 				{
@@ -1387,12 +1448,14 @@ extern "C"
 			}
 		}
 
-		mem::DeallocateHooks(ctx->hookAlloc, failedHooks, failedCount);
-		mem::DeallocateStubs(ctx->stubAlloc, failedStubs, failedCount);
+		mem::DeallocateHooks(ctx->hookAlloc, failedHooks, failedHookCount);
+		mem::DeallocateStubs(ctx->stubAlloc, failedStubs, failedStubCount);
 
-		// Re-protect all stubs, by page
-		for()
+		const mem::Allocator** stubAllocs = (mem::Allocator**)_malloca(sizeof(mem::Allocator*) * stubCount);
+		const unsigned stubAllocCount = mem::GatherUniqueAllocators(ctx->stubAlloc, stubAllocs, stubs, stubCount);
+		mem::ProtectStubAllocList(stubAllocs, stubAllocCount);
 
+		_freea(stubAllocs);
 		_freea(failedStubs);
 		_freea(stubs);
 		_freea(hooks);
