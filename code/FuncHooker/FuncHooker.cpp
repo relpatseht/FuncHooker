@@ -1552,7 +1552,7 @@ extern "C"
 	unsigned Hook_UninstallMany(struct FuncHook** funcHooks, unsigned count)
 	{
 		const void** const privAddrs = (const void**)_alloca(sizeof(void**) * count);
-		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, true, privAddrs);
+		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, false, privAddrs);
 		DWORD* const oldPrivileges = (DWORD*)_alloca(sizeof(DWORD) * privAddrCount);
 
 		// We need to make every function page read/writeable, then make sure none of the
