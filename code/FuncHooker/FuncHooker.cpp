@@ -1604,6 +1604,11 @@ extern "C"
 
 	unsigned Hook_DestroyMany(struct FuncHooker* ctx, struct FuncHook** funcHooks, unsigned count)
 	{
+		InjectionStub** const stubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
+		uintptr_t* const proxyTargets = (uintptr_t*)_malloca(sizeof(uintptr_t) * count);
+		unsigned stubCount = 0;
+		unsigned proxyTargetCount = 0;
+
 		// If any of the hooks are still installed, be sure to uninstall them
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
@@ -1620,14 +1625,57 @@ extern "C"
 		{
 			FuncHook* const hook = funcHooks[hookIndex];
 
-			if (hook->stub)
+			if (hook)
 			{
-				if (hook->proxyBackup)
+				if (hook->proxyBackupSize)
 				{
+					proxyTargets[proxyTargetCount++] = mem::alloc::RoundDownPageBoundary(reinterpret_cast<uintptr_t>(hook->injectionJumpTarget));
+				}
 
+				if (hook->stub)
+				{
+					stubs[stubCount++] = hook->stub;
 				}
 			}
 		}
+
+		mem::Allocator** const stubAllocList = (mem::Allocator**)_malloca(sizeof(mem::Allocator*) * stubCount);
+		const unsigned stubAllocCount = mem::GatherUniqueAllocators(ctx->stubAlloc, stubAllocList, stubs, stubCount);
+
+		mem::UnprotectStubAllocList(stubAllocList, stubAllocCount);
+		mem::DeallocateStubs(ctx->stubAlloc, stubs, stubCount);
+		mem::ProtectStubAllocList(stubAllocList, stubAllocCount);
+
+		std::sort(proxyTargets, proxyTargets + proxyTargetCount);
+		proxyTargetCount = std::unique(proxyTargets, proxyTargets + proxyTargetCount) - proxyTargets;
+
+		for (unsigned proxyPageIndex = 0; proxyPageIndex < proxyTargetCount; ++proxyPageIndex)
+		{
+			DWORD oldProtect;
+			VirtualProtect(reinterpret_cast<void*>(proxyTargets[proxyPageIndex]), 4096, PAGE_EXECUTE_READWRITE, &oldProtect);
+		}
+
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+			FuncHook* const hook = funcHooks[hookIndex];
+
+			if(hook && hook->proxyBackupSize)
+			{
+				std::memcpy(const_cast<void*>(hook->injectionJumpTarget), hook->proxyBackup, hook->proxyBackupSize);
+			}
+		}
+
+		for (unsigned proxyPageIndex = 0; proxyPageIndex < proxyTargetCount; ++proxyPageIndex)
+		{
+			DWORD oldProtect;
+			VirtualProtect(reinterpret_cast<void*>(proxyTargets[proxyPageIndex]), 4096, PAGE_EXECUTE_READ, &oldProtect);
+		}
+
+		mem::DeallocateHooks(ctx->hookAlloc, funcHooks, count);
+
+		_freea(stubAllocList);
+		_freea(proxyTargets);
+		_freea(stubs);
 	}
 
 	struct FuncHooker* Hook_DestroyContext(void);
