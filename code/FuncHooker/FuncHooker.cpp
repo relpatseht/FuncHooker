@@ -2,7 +2,6 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <winternl.h>
-#include <ntstatus.h>
 #include <cmath>
 #include <cstring>
 #include <malloc.h>
@@ -1159,6 +1158,9 @@ namespace
 					SYSTEM_THREAD_INFORMATION Threads[1];
 				} SYSTEM_PROCESS_INFORMATION, * PSYSTEM_PROCESS_INFORMATION;
 
+				static constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH = 0xC0000004UL;
+				static constexpr NTSTATUS STATUS_SUCCESS = 0x00000000UL;
+
 				template<typename T>
 				static T GetNtDLLFuncPtr(const char *funcName)
 				{
@@ -1184,7 +1186,7 @@ namespace
 					DWORD requiredMemLen;
 					NTSTATUS queryStat = win_internal::QuerySystemInformation(SystemProcessInformation, memPtr, memLen, &requiredMemLen);
 
-					if (queryStat == STATUS_INFO_LENGTH_MISMATCH)
+					if (queryStat == win_internal::STATUS_INFO_LENGTH_MISMATCH)
 					{
 						VirtualFree(memPtr, 0, MEM_RELEASE);
 
@@ -1195,7 +1197,7 @@ namespace
 						*inoutMemPtr = memPtr;
 						*inoutMemLen = memLen;
 					}
-					else if (queryStat == STATUS_SUCCESS)
+					else if (queryStat == win_internal::STATUS_SUCCESS)
 					{
 						return true;
 					}
