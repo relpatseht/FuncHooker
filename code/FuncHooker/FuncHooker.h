@@ -40,7 +40,7 @@ extern "C"
 	FUNCHOOKER_DLLAPI bool FUNCHOOKER_DLLCALL Hook_Destroy(struct FuncHooker* ctx, struct FuncHook* funcHook);
 	FUNCHOOKER_DLLAPI unsigned FUNCHOOKER_DLLCALL Hook_DestroyMany(struct FuncHooker* ctx, struct FuncHook** funcHooks, unsigned count);
 
-	FUNCHOOKER_DLLAPI struct FuncHooker* FUNCHOOKER_DLLCALL Hook_DestroyContext(void);
+	FUNCHOOKER_DLLAPI void FUNCHOOKER_DLLCALL Hook_DestroyContext(struct FuncHooker* ctx);
 #ifdef __cplusplus
 }
 

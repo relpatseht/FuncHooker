@@ -525,6 +525,21 @@ namespace
 		{
 			free::Free(stubAlloc, stubs, count);
 		}
+
+		static void FreeAllocatorList(Allocator** headPtr)
+		{
+			Allocator* curAlloc = *headPtr;
+
+			while (curAlloc)
+			{
+				mem::Allocator* const nextAlloc = curAlloc->next;
+				VirtualFree(curAlloc, mem::ALLOC_RESERVE_SIZE, MEM_RELEASE);
+
+				curAlloc = nextAlloc;
+			}
+
+			*headPtr = nullptr;
+		}
 	}
 
 	namespace create
@@ -1678,5 +1693,9 @@ extern "C"
 		_freea(stubs);
 	}
 
-	struct FuncHooker* Hook_DestroyContext(void);
+	void Hook_DestroyContext(struct FuncHooker* ctx)
+	{
+		mem::FreeAllocatorList(&ctx->hookAlloc);
+		mem::FreeAllocatorList(&ctx->stubAlloc);
+	}
 }
