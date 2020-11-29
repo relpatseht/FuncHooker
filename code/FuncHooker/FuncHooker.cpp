@@ -14,6 +14,7 @@ namespace
 {
 	template<size_t PtrSize>
 	struct InjectionStubImpl;
+
 	template<>
 	struct InjectionStubImpl<8>
 	{
