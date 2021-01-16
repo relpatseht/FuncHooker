@@ -4,7 +4,7 @@
 #include <winternl.h>
 #include <cmath>
 #include <cstring>
-#include <malloc.h>
+#include <numeric>
 #include <algorithm>
 #include "Zydis/Zydis.h"
 #include "ASMStubs.h"
@@ -56,12 +56,6 @@ namespace
 	}
 }
 
-struct FuncHooker
-{
-	mem::Allocator* stubAlloc;
-	mem::Allocator* hookAlloc;
-};
-
 struct FuncHook
 {
 	InjectionStub* stub;
@@ -77,8 +71,82 @@ struct FuncHook
 	uint8_t headderBackup[sizeof(ASM::X64::LJmp)]; // overwriteSize
 };
 
+struct FuncHooker
+{
+	mem::Allocator* stubAlloc;
+	mem::Allocator* hookAlloc;
+};
+
 namespace
 {
+	namespace list
+	{
+		template<bool ReusePermute = true, typename PermuteIt, typename OutIt>
+		static void apply_permutation(PermuteIt permute, OutIt data, size_t count)
+		{
+			typedef typename std::iterator_traits<PermuteIt>::value_type index_type;
+
+			for (index_type index = 0; index < count; ++index)
+			{
+				index_type currentPosition = index;
+				index_type target = permute[index];
+
+				if (target >= count)
+					continue;
+
+				while (target != index)
+				{
+					std::swap(data[currentPosition], data[target]);
+
+					permute[currentPosition] = ~target;
+					currentPosition = target;
+					target = permute[currentPosition];
+				}
+
+				permute[currentPosition] = ~target;
+			}
+
+			if constexpr (ReusePermute)
+			{
+				for (index_type index = 0; index < count; ++index)
+				{
+					permute[index] = ~permute[index];
+				}
+			}
+		}
+	}
+
+	namespace alloca_helper
+	{
+		static constexpr size_t STACK_ALIGN = sizeof(size_t) << 1;
+
+		static __forceinline void* MarkStack(void* addr)
+		{
+			*reinterpret_cast<uint8_t*>(addr) = 1;
+
+			return reinterpret_cast<uint8_t*>(addr) + STACK_ALIGN;
+		}
+
+		static __forceinline void* MarkHeap(void* addr)
+		{
+			*reinterpret_cast<uint8_t*>(addr) = 0;
+
+			return reinterpret_cast<uint8_t*>(addr) + STACK_ALIGN;
+		}
+	}
+#define valloca(X) (((X)+alloca_helper::STACK_ALIGN) < 1024 ? _alloca((X)+alloca_helper::STACK_ALIGN) : VirtualAlloc(nullptr, (X)+alloca_helper::STACK_ALIGN, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+
+	static void vfreea(void* addr)
+	{
+		uint8_t* const mem = reinterpret_cast<uint8_t*>(addr);
+
+		if (mem)
+		{
+			if (!*(mem - alloca_helper::STACK_ALIGN))
+				VirtualFree(mem, 0, MEM_RELEASE);
+		}
+	}
+
 	namespace mem
 	{
 		static constexpr size_t ALLOC_RESERVE_SIZE = 1 * 1024 * 1024; // 1mb
@@ -104,6 +172,7 @@ namespace
 
 		namespace alloc
 		{
+
 			static __forceinline uintptr_t RoundDownPageBoundary(uintptr_t val)
 			{
 				static constexpr uintptr_t PAGE_MASK = ~(ALLOC_PAGE_SIZE - 1);
@@ -370,8 +439,8 @@ namespace
 
 		static unsigned AllocateStubs(Allocator** stubAllocHeadPtr, InjectionStub **outStubs, void **hintAddrs, unsigned count)
 		{
-			unsigned* allocIndices = (unsigned*)_malloca(sizeof(unsigned) * count);
-			InjectionStub** tempStubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
+			unsigned* allocIndices = (unsigned*)valloca(sizeof(unsigned) * count);
+			InjectionStub** tempStubs = (InjectionStub**)valloca(sizeof(InjectionStub*) * count);
 			Allocator* const stubAllocHead = *stubAllocHeadPtr;
 			Allocator* curAlloc = stubAllocHead;
 			unsigned allocated = 0;
@@ -463,8 +532,8 @@ namespace
 
 			assert(allocated <= count);
 
-			_freea(tempStubs);
-			_freea(allocIndices);
+			vfreea(tempStubs);
+			vfreea(allocIndices);
 
 			return allocated;
 		}
@@ -1257,12 +1326,19 @@ namespace
 
 						assert(threadInfo.ClientId.UniqueProcess == procIdHandle);
 
-						if (threadHandle && !std::binary_search(threadList, threadListEnd, threadHandle))
+						if (threadHandle)
 						{
-							assert(outThreadIndex < maxThreadCount);
+							if (!std::binary_search(threadList, threadListEnd, threadHandle))
+							{
+								assert(outThreadIndex < maxThreadCount);
 
-							threadList[outThreadIndex] = threadHandle;
-							++outThreadIndex;
+								threadList[outThreadIndex] = threadHandle;
+								++outThreadIndex;
+							}
+							else
+							{
+								CloseHandle(threadHandle);
+							}
 						}
 					}
 					
@@ -1276,18 +1352,36 @@ namespace
 
 		struct RAIISingleThreadBlock
 		{
+			const DWORD procId;
 			const HANDLE thisThread;
 			HANDLE* threadList;
 			unsigned threadCount;
+			unsigned maxThreadCount;
 
-			RAIISingleThreadBlock() : thisThread(GetCurrentThread()), threadList(nullptr), threadCount(0)
+			RAIISingleThreadBlock() : procId(GetCurrentProcessId()), thisThread(GetCurrentThread()), threadList(nullptr), threadCount(0), maxThreadCount(0)
 			{
-				const DWORD procId = GetCurrentProcessId();
+				PauseAnyNewThreads();
+			}
+
+			~RAIISingleThreadBlock()
+			{
+				for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+				{
+					if (threadList[threadIndex] != thisThread)
+						ResumeThread(threadList[threadIndex]);
+
+					CloseHandle(threadList[threadIndex]);
+				}
+
+				VirtualFree(threadList, 0, MEM_RELEASE);
+			}
+
+			void PauseAnyNewThreads()
+			{
 				void* procInfoMem = nullptr;
 				unsigned procInfoMemLen = 0;
-				unsigned maxThreadCount = threadCount;
 				unsigned oldThreadCount;
-				
+
 				// Threads could be created while the gather/suspend process is happening, so do in a loop
 				do
 				{
@@ -1312,17 +1406,6 @@ namespace
 
 				VirtualFree(procInfoMem, 0, MEM_RELEASE); // Don't forget to free the snapshot mem
 			}
-
-			~RAIISingleThreadBlock()
-			{
-				for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
-				{
-					if (threadList[threadIndex] != thisThread)
-						ResumeThread(threadList[threadIndex]);
-				}
-
-				VirtualFree(threadList, 0, MEM_RELEASE);
-			}
 		};
 
 		static __forceinline uintptr_t* ContextIP(CONTEXT* context)
@@ -1333,6 +1416,107 @@ namespace
 			return &context->Rip;
 #endif //#else //#ifdef _X86_
 		}
+
+#if 0
+		static unsigned AttemptClearVolatileIPs(RAIISingleThreadBlock* inoutThreadBlock, const FuncHook** hooks, unsigned hookCount)
+		{
+			struct VolatileRange
+			{
+				uintptr_t start;
+				uintptr_t end;
+			};
+			unsigned threadCount = inoutThreadBlock->threadCount;
+			unsigned* const threadIndices = (unsigned*)valloca(threadCount * sizeof(unsigned));
+			uintptr_t* const threadIPs = (uintptr_t*)valloca(threadCount * sizeof(uintptr_t));
+			VolatileRange* const volatileRanges = (VolatileRange*)valloca(hookCount * sizeof(VolatileRange));
+
+			// Find the volatile range of all the hooks
+			std::iota(threadIndices, threadIndices + threadCount, 0);
+			for (unsigned hookIndex = 0; hookIndex < hookCount; ++hookIndex)
+			{
+				const FuncHook& hook = *hooks[hookIndex];
+
+				volatileRanges[hookIndex].start = reinterpret_cast<uintptr_t>(hook.funcBody);
+				volatileRanges[hookIndex].end = volatileRanges[hookIndex].start + hook.overwriteSize;
+			}
+
+			// Sort them (should be no overlaps)
+			std::sort(volatileRanges, volatileRanges + hookCount, [](const VolatileRange& a, const VolatileRange& b)
+			{
+				return a.start < b.start;
+			});
+
+			// Gather all thread IPs
+			for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+			{
+				CONTEXT threadContext{};
+
+				threadContext.ContextFlags = CONTEXT_CONTROL;
+				GetThreadContext(inoutThreadBlock->threadList[threadIndex], &threadContext);
+
+				threadIPs[threadIndex] = ContextIP(threadContext);
+			}
+
+			// Sort indices by IP
+			std::sort(threadIndices, threadIndices + threadCount, [&](unsigned a, unsigned b)
+			{
+				return threadIPs[a] < threadIPs[b];
+			});
+
+			// Sort IPs by IP
+			list::apply_permutation(threadIndices, threadIPs, threadCount);
+
+			// Partition thread indices. Those at the start have an IP in a volatile range
+			unsigned* inThreadIndexCur = threadIndices;
+			const uintptr_t* inThreadIPCur = threadIPs;
+			const uintptr_t* const inThreadIPEnd = threadIPs + threadCount;
+			unsigned* outThreadIndices = threadIndices;
+
+			for (unsigned hookIndex = 0; hookIndex < hookCount; ++hookIndex)
+			{
+				const VolatileRange& curVolatileRange = volatileRanges[hookIndex];
+
+				while (*inThreadIPCur < curVolatileRange.start)
+				{
+					if (++inThreadIPCur < inThreadIPEnd)
+						goto threads_partitioned;
+					else
+						++inThreadIndexCur;
+				}
+
+				while (*inThreadIPCur >= curVolatileRange.start && *inThreadIPCur < curVolatileRange.end)
+				{
+					std::swap(*outThreadIndices, *inThreadIndexCur);
+					++outThreadIndices;
+					++inThreadIndexCur;
+
+					if (++inThreadIPCur < inThreadIPEnd)
+						goto threads_partitioned;
+				}
+			}
+		threads_partitioned:
+			
+			const unsigned volatileThreadCount = static_cast<unsigned>(outThreadIndices - threadIndices);
+
+			if (volatileThreadCount)
+			{
+				// Sort all threads by the partition
+				list::apply_permutation(threadIndices, inoutThreadBlock->threadList, threadCount);
+
+				// Briefly resume volatile threads
+				for (unsigned threadIndex = 0; threadIndex < volatileThreadCount; ++threadIndex)
+					ResumeThread(inoutThreadBlock->threadList[threadIndex]);
+
+				Sleep(0);
+
+				// Suspend volatile threads again
+				for (unsigned threadIndex = 0; threadIndex < volatileThreadCount; ++threadIndex)
+					SuspendThread(inoutThreadBlock->threadList[threadIndex]);
+
+				threadCount = volatileThreadCount;
+			}
+		}
+#endif
 
 		static void RelocateMovedIPs(HANDLE* threadList, unsigned threadCount, FuncHook** hooks, unsigned hookCount)
 		{
@@ -1358,7 +1542,6 @@ namespace
 						const uintptr_t destStart = reinterpret_cast<uintptr_t>(hook.stub);
 						const uintptr_t destOffset = ip - overwriteStart;
 
-						threadContext.Rip = destStart + destOffset;
 						*ctxIP = destStart + destOffset;
 						SetThreadContext(thread, &threadContext);
 						break;
@@ -1420,10 +1603,10 @@ extern "C"
 		else
 			ZydisDecoderInit(&disasm, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_ADDRESS_WIDTH_32);
 
-		void** const funcBodies = (void**)_malloca(sizeof(void*) * count);
-		FuncHook** const hooks = (FuncHook**)_malloca(sizeof(FuncHook*) * count);
-		InjectionStub** const stubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
-		InjectionStub** const failedStubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
+		void** const funcBodies = (void**)valloca(sizeof(void*) * count);
+		FuncHook** const hooks = (FuncHook**)valloca(sizeof(FuncHook*) * count);
+		InjectionStub** const stubs = (InjectionStub**)valloca(sizeof(InjectionStub*) * count);
+		InjectionStub** const failedStubs = (InjectionStub**)valloca(sizeof(InjectionStub*) * count);
 		FuncHook** const failedHooks = hooks;
 
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
@@ -1469,15 +1652,15 @@ extern "C"
 		mem::DeallocateHooks(ctx->hookAlloc, failedHooks, failedHookCount);
 		mem::DeallocateStubs(ctx->stubAlloc, failedStubs, failedStubCount);
 
-		mem::Allocator** const stubAllocs = (mem::Allocator**)_malloca(sizeof(mem::Allocator*) * stubCount);
+		mem::Allocator** const stubAllocs = (mem::Allocator**)valloca(sizeof(mem::Allocator*) * stubCount);
 		const unsigned stubAllocCount = mem::GatherUniqueAllocators(ctx->stubAlloc, stubAllocs, stubs, stubCount);
 		mem::ProtectStubAllocList(stubAllocs, stubAllocCount);
 
-		_freea(stubAllocs);
-		_freea(failedStubs);
-		_freea(stubs);
-		_freea(hooks);
-		_freea(funcBodies);
+		vfreea(stubAllocs);
+		vfreea(failedStubs);
+		vfreea(stubs);
+		vfreea(hooks);
+		vfreea(funcBodies);
 		return createdHooks;
 	}
 
@@ -1488,9 +1671,9 @@ extern "C"
 
 	unsigned Hook_InstallMany(struct FuncHook** funcHooks, unsigned count)
 	{
-		const void** const privAddrs = (const void**)_alloca(sizeof(void**) * count);
+		const void** const privAddrs = (const void**)valloca(sizeof(void**) * count);
 		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, true, privAddrs);
-		DWORD* const oldPrivileges = (DWORD*)_alloca(sizeof(DWORD) * privAddrCount);
+		DWORD* const oldPrivileges = (DWORD*)valloca(sizeof(DWORD) * privAddrCount);
 
 		// We need to make every function page read/writeable, then make sure none of the
 		// functions are executing while we install the hooks. It's best to do that ASAP,
@@ -1552,9 +1735,9 @@ extern "C"
 
 	unsigned Hook_UninstallMany(struct FuncHook** funcHooks, unsigned count)
 	{
-		const void** const privAddrs = (const void**)_alloca(sizeof(void**) * count);
+		const void** const privAddrs = (const void**)valloca(sizeof(void**) * count);
 		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, false, privAddrs);
-		DWORD* const oldPrivileges = (DWORD*)_alloca(sizeof(DWORD) * privAddrCount);
+		DWORD* const oldPrivileges = (DWORD*)valloca(sizeof(DWORD) * privAddrCount);
 
 		// We need to make every function page read/writeable, then make sure none of the
 		// functions are executing while we install the hooks. It's best to do that ASAP,
@@ -1622,8 +1805,8 @@ extern "C"
 
 	unsigned Hook_DestroyMany(struct FuncHooker* ctx, struct FuncHook** funcHooks, unsigned count)
 	{
-		InjectionStub** const stubs = (InjectionStub**)_malloca(sizeof(InjectionStub*) * count);
-		uintptr_t* const proxyTargets = (uintptr_t*)_malloca(sizeof(uintptr_t) * count);
+		InjectionStub** const stubs = (InjectionStub**)valloca(sizeof(InjectionStub*) * count);
+		uintptr_t* const proxyTargets = (uintptr_t*)valloca(sizeof(uintptr_t) * count);
 		unsigned stubCount = 0;
 		unsigned proxyTargetCount = 0;
 
@@ -1657,7 +1840,7 @@ extern "C"
 			}
 		}
 
-		mem::Allocator** const stubAllocList = (mem::Allocator**)_malloca(sizeof(mem::Allocator*) * stubCount);
+		mem::Allocator** const stubAllocList = (mem::Allocator**)valloca(sizeof(mem::Allocator*) * stubCount);
 		const unsigned stubAllocCount = mem::GatherUniqueAllocators(ctx->stubAlloc, stubAllocList, stubs, stubCount);
 
 		mem::UnprotectStubAllocList(stubAllocList, stubAllocCount);
@@ -1666,7 +1849,7 @@ extern "C"
 
 		std::sort(proxyTargets, proxyTargets + proxyTargetCount);
 		proxyTargetCount = static_cast<unsigned>(std::unique(proxyTargets, proxyTargets + proxyTargetCount) - proxyTargets);
-		DWORD* const oldPrivs = (DWORD*)_malloca(sizeof(DWORD) * proxyTargetCount);
+		DWORD* const oldPrivs = (DWORD*)valloca(sizeof(DWORD) * proxyTargetCount);
 
 		{
 			// We need to make every function page read/writeable, then make sure none of the
@@ -1689,9 +1872,9 @@ extern "C"
 
 		mem::DeallocateHooks(ctx->hookAlloc, funcHooks, count);
 
-		_freea(stubAllocList);
-		_freea(proxyTargets);
-		_freea(stubs);
+		vfreea(stubAllocList);
+		vfreea(proxyTargets);
+		vfreea(stubs);
 
 		return count;
 	}
