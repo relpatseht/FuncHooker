@@ -27,8 +27,8 @@ namespace
 			executeInjectee(funcMem + overwriteSize), // Absolute address :) 
 			executeInjector(InjectionPtr)			  // This is only ever used if we needed a long proxy
 		{
-			static constexpr uint8_t int3 = 0xCC;
-			std::memset(funcHeader, int3, sizeof(funcHeader));
+			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
+			std::memset(funcHeader, nop, sizeof(funcHeader));
 		}
 
 		void SetInjectee(const void *funcMem, unsigned offset)
@@ -49,8 +49,8 @@ namespace
 		{
 			((void)InjectionPtr);
 
-			static constexpr uint8_t int3 = 0xCC;
-			std::memset(funcHeader, int3, sizeof(funcHeader));
+			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
+			std::memset(funcHeader, nop, sizeof(funcHeader));
 		}
 
 		void SetInjectee(const void* funcMem, unsigned offset)

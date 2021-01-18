@@ -78,7 +78,7 @@ namespace ASM
 
 		MOD:
 		- 00 (0 - PTR):
-		- R/M = 100: Register indicrect addresing mode / SIB with no displacement
+		- R/M = 100: Register indirect addresing mode / SIB with no displacement
 		- R/M = 101: Displacement only addressing mode
 		- 01 (1 - PTR_DISP8): int8_t displacement follows addressing uint8_t(s) (SIB)
 		- 10 (2 - PTR_DISP32): int32_t displacement follows addressing uint8_t(s) (SIB)
@@ -215,7 +215,7 @@ namespace ASM
 		{
 			PushU32 lowVal;
 			const uint8_t movOpcode = 0xC7; // The push operation only takes a 32 bit value, but actually
-			const ModRM modRM{ (uint8_t)MOD::PTR_DISP8, REG::RSP, 0 };  // pushes 8 bytes on the stack. So after the push, we need to
+			const ModRM modRM{ (uint8_t)MOD::PTR_DISP8, 0, REG::RSP };  // pushes 8 bytes on the stack. So after the push, we need to
 			const SIB sib{ 0, REG::RSP, REG::RSP };      // mov the upper 4 bytes into the correct position
 			const uint8_t rspOffset = 4;
 			uint32_t highVal;
