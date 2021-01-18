@@ -145,6 +145,11 @@ namespace ASM
 
 			Jmp(const void* from, const void* to) : relativeOffset(detail::GetOffset<int32_t>(from, to, sizeof(Jmp))) {}
 			explicit Jmp(int32_t offset) : relativeOffset(offset) {}
+
+			void SetAddr(const void* from, const void* to)
+			{
+				relativeOffset = detail::GetOffset<int32_t>(from, to, sizeof(Jmp));
+			}
 		} PACK_ATTR;
 
 		struct SJmp
@@ -217,6 +222,17 @@ namespace ASM
 
 			PushU64() = default;
 			explicit PushU64(uint64_t value) : lowVal(static_cast<uint32_t>(value)), highVal(static_cast<uint32_t>(value >> 32)) {}
+
+			uint64_t GetValue() const
+			{
+				return (static_cast<uint64_t>(highVal) << 32) | lowVal.value;
+			}
+
+			void SetValue(uint64_t value)
+			{
+				highVal = static_cast<uint32_t>(value >> 32);
+				lowVal.value = static_cast<uint32_t>(value);
+			}
 		} PACK_ATTR;
 
 		using X86::Return;

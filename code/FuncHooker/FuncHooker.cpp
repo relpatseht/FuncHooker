@@ -27,8 +27,13 @@ namespace
 			executeInjectee(funcMem + overwriteSize), // Absolute address :) 
 			executeInjector(InjectionPtr)			  // This is only ever used if we needed a long proxy
 		{
-			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
-			std::memset(funcHeader, nop, sizeof(funcHeader));
+			static constexpr uint8_t int3 = 0xCC;
+			std::memset(funcHeader, int3, sizeof(funcHeader));
+		}
+
+		void SetInjectee(const void *funcMem, unsigned offset)
+		{
+			executeInjectee.addr.SetValue(reinterpret_cast<uintptr_t>(funcMem) + offset);
 		}
 	};
 
@@ -44,8 +49,13 @@ namespace
 		{
 			((void)InjectionPtr);
 
-			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
-			std::memset(funcHeader, nop, sizeof(funcHeader));
+			static constexpr uint8_t int3 = 0xCC;
+			std::memset(funcHeader, int3, sizeof(funcHeader));
+		}
+
+		void SetInjectee(const void* funcMem, unsigned offset)
+		{
+			executeInjectee.SetAddr(reinterpret_cast<uint8_t*>(this) + offsetof(InjectionStubImpl<4>, executeInjectee), reinterpret_cast<const uint8_t*>(funcMem) + offset);
 		}
 	};
 
@@ -1020,6 +1030,10 @@ namespace
 			const void* const deadZone = FindDeadzone(funcMem, deadZoneMinSize);
 
 			std::memset(outHook, 0, sizeof(*outHook));
+			outHook->InjectionFunc = InjectionFunc;
+			outHook->funcBody = funcBody;
+			new (stubMemPtr) InjectionStub(funcMem, InjectionFunc, outHook->overwriteSize);
+			outHook->stub = reinterpret_cast<InjectionStub*>(stubMemPtr);
 
 			// If we found a deadzone, we can setup a proxy, yay!
 			unsigned minOverwriteSize;
@@ -1077,6 +1091,8 @@ namespace
 				std::memset(outHook->headderBackup + outHook->overwriteSize, int3Opcode, sizeof(outHook->headderBackup) - outHook->overwriteSize);
 				std::memset(outHook->headerOverwrite + outHook->overwriteSize, int3Opcode, sizeof(outHook->headerOverwrite) - outHook->overwriteSize);
 
+				outHook->stub->SetInjectee(funcMem, outHook->overwriteSize);
+
 				// Write out jump into the overwrite to save on ops later when the hook is actually installed
 				switch (minOverwriteSize)
 				{
@@ -1093,10 +1109,6 @@ namespace
 					assert(0 && "Unknown hook overwrite size");
 				}
 
-				new (stubMemPtr) InjectionStub(funcMem, InjectionFunc, outHook->overwriteSize);
-				outHook->stub = reinterpret_cast<InjectionStub*>(stubMemPtr);
-				outHook->InjectionFunc = InjectionFunc;
-				outHook->funcBody = funcBody;
 
 				// If we've only moved 1 instruction, and that instruction was a width that can be written to atomicly,
 				// then we can patch the function hook in without having to worry about threads being in the middle
