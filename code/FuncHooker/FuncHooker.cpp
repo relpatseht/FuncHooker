@@ -1804,16 +1804,26 @@ extern "C"
 		unsigned installedHooks = 0;
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
-			static constexpr uint8_t nopOpcode = 0x90;
-			static constexpr size_t LONG_JUMP = sizeof(ASM::X64::LJmp);
-			static constexpr size_t JUMP = sizeof(ASM::X86::Jmp);
-			static constexpr size_t SHORT_JUMP = sizeof(ASM::X86::SJmp);
 			FuncHook* const hook = funcHooks[hookIndex];
 
 			if (hook && !hook->isInstalled)
 			{
 				try
 				{
+					// If using a proxy jump, write it in
+					if (hook->proxyBackupSize)
+					{
+						void* const proxyAddr = const_cast<void*>(hook->injectionJumpTarget);
+						const uint8_t* const src = reinterpret_cast<const uint8_t*>(hook->injectionJumpTarget);
+						const uint8_t* const dst = reinterpret_cast<const uint8_t*>(hook->InjectionFunc);
+						static constexpr intptr_t MAX_32_JMP_DIST = (1u << 31) - 1;
+
+						if (std::abs(src - dst) < MAX_32_JMP_DIST)
+							new (proxyAddr) ASM::X86::Jmp(src, dst);
+						else
+							new (proxyAddr) ASM::X64::LJmp(dst);
+					}
+
 					if (hook->hotpatchable)
 					{
 						static constexpr size_t U16 = sizeof(uint16_t);
@@ -1860,9 +1870,15 @@ extern "C"
 		// We need to make every function page read/writeable, then make sure none of the
 		// functions are executing while we install the hooks. It's best to do that ASAP,
 		// so make our thread time critical while we do it.
-		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, count);
+		// We can't take advantage of the hotpatchable flag here, since we'll also going
+		// to restore the proxy zone (where a thread may be living now), and two disjoint
+		// writes can't be done atomically.
 		modify::RAIITimeCriticalBlock raiiTimeCritical;
 		modify::RAIISingleThreadBlock raiiSingleThreaded;
+		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, count);
+
+		// Note: Proxies make this not work. Need to flush IPs out of dangerous zone instead!
+		//modify::RelocateMovedIPs(raiiSingleThreaded.threadList, raiiSingleThreaded.threadCount, funcHooks, count);
 
 		unsigned removedHooks = 0;
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
@@ -1873,7 +1889,15 @@ extern "C"
 			{
 				try
 				{
-					std::memcpy(hook->funcBody, hook->proxyBackup, hook->proxyBackupSize);
+					std::memcpy(hook->funcBody, hook->headderBackup, hook->overwriteSize);
+
+					// If using a proxy jump, restore the data for cleanliness
+					if (hook->proxyBackupSize)
+					{
+						void* const proxyAddr = const_cast<void*>(hook->injectionJumpTarget);
+						std::memcpy(proxyAddr, hook->proxyBackup, hook->proxyBackupSize);
+					}
+
 					hook->isInstalled = false;
 					++removedHooks;
 				}

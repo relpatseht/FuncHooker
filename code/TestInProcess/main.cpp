@@ -13,13 +13,21 @@ namespace hooks
 		typedef void (*FuncType)(void);
 		static const FuncType HookedFunc = reinterpret_cast<FuncType>(Hook_GetTrampoline(s_hook1));
 
+		std::cout << "In Hooker1()." << std::endl;
+		HookedFunc();
+		std::cout << "Leaving Hooker1" << std::endl;
 	}
 
-	void Hooker2(int a)
+	int Hooker2(int a)
 	{
 		typedef int (*FuncType)(int);
 		static const FuncType HookedFunc = reinterpret_cast<FuncType>(Hook_GetTrampoline(s_hook2));
 
+		std::cout << "In Hooker2(" << a << "). Swapping with (" << a - 1 << ")" << std::endl;
+		int ret = HookedFunc(a - 1);
+		std::cout << "Called injectee: " << ret << " - bumping ret by 3" << std::endl;
+
+		return ret + 3;
 	}
 }
 
