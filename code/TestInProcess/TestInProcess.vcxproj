@@ -77,6 +77,22 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Hookees.cpp" />
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\external\zydis\zycore.vcxproj">
+      <Project>{e06e2e87-82b9-4dc2-a1e9-fe371cdbaac2}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\external\zydis\zydis.vcxproj">
+      <Project>{88a23124-5640-35a0-b890-311d7a67a7d2}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\FuncHooker\FuncHooker.vcxproj">
+      <Project>{fac84917-1db4-4210-9172-1a7352bbbf03}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Hookees.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

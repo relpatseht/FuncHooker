@@ -6,6 +6,7 @@
 #include <cstring>
 #include <numeric>
 #include <algorithm>
+#include <atomic>
 #include "Zydis/Zydis.h"
 #include "ASMStubs.h"
 #include "FuncHooker.h"
@@ -68,8 +69,11 @@ struct FuncHook
 	uint8_t overwriteSize;
 	uint8_t proxyBackupSize;
 	uint8_t proxyBackup[sizeof(ASM::X64::LJmp)];
-	uint8_t headderBackup[sizeof(ASM::X64::LJmp)]; // overwriteSize
+	uint8_t headderBackup[32]; // overwriteSize. 32 since max instruction size is 15 bytes, so allow space for 2 then round numbers are nice...
+	uint8_t headerOverwrite[32]; // overwriteSize.  32 since max instruction size is 15 bytes, so allow space for 2 then round numbers are nice...
 };
+
+static constexpr const size_t funcHookSize = sizeof(FuncHook);
 
 struct FuncHooker
 {
@@ -274,6 +278,7 @@ namespace
 					alloc->pageCur += entrySize;
 					newEntry->next = alloc->freeList;
 					alloc->freeList = newEntry;
+					pageRemaining -= entrySize;
 				}
 			}
 
@@ -290,7 +295,7 @@ namespace
 					alloc->freeList = alloc->freeList->next;
 				}
 
-				if(allocated < count)
+				if (allocated < count)
 				{
 					AddFreeListEntries(alloc, sizeof(T), count - allocated);
 
@@ -432,12 +437,12 @@ namespace
 			return allocator;
 		}
 
-		static unsigned AllocateHooks(Allocator** hookAllocHeadPtr, FuncHook **outHooks, unsigned count)
+		static unsigned AllocateHooks(Allocator** hookAllocHeadPtr, FuncHook** outHooks, unsigned count)
 		{
 			return alloc::AllocateMany(hookAllocHeadPtr, outHooks, count);
 		}
 
-		static unsigned AllocateStubs(Allocator** stubAllocHeadPtr, InjectionStub **outStubs, void **hintAddrs, unsigned count)
+		static unsigned AllocateStubs(Allocator** stubAllocHeadPtr, InjectionStub** outStubs, void** hintAddrs, unsigned count)
 		{
 			unsigned* allocIndices = (unsigned*)valloca(sizeof(unsigned) * count);
 			InjectionStub** tempStubs = (InjectionStub**)valloca(sizeof(InjectionStub*) * count);
@@ -449,15 +454,15 @@ namespace
 
 			while (curAlloc && allocated < count)
 			{
-				const unsigned validCount = alloc::GatherStubIndicesWithin2GBOfAllocator(curAlloc, outStubs, hintAddrs, count, allocIndices);				
+				const unsigned validCount = alloc::GatherStubIndicesWithin2GBOfAllocator(curAlloc, outStubs, hintAddrs, count, allocIndices);
 
-				if(validCount > 0)
+				if (validCount > 0)
 				{
 					protect::UnprotectStubAllocator(curAlloc);
 					const unsigned allocedStubs = alloc::Allocate<InjectionStub>(curAlloc, tempStubs, validCount);
 
 					// Don't reprotect allocated stubs, since they'll be written to soon anyway. Reprotect after write
-					if(allocedStubs == 0)
+					if (allocedStubs == 0)
 						protect::ProtectStubAllocator(curAlloc);
 					else
 					{
@@ -490,8 +495,11 @@ namespace
 							const unsigned validCount = alloc::GatherStubIndicesWithin2GBOfAllocator(curAlloc, outStubs, hintAddrs, count, allocIndices);
 							const unsigned allocedStubs = alloc::Allocate<InjectionStub>(curAlloc, tempStubs, validCount);
 
-							assert(validCount > 0 && "Allocator dsigned for stub did not apply to it");
-							assert(allocedStubs > 0 && "New allocatoe couldn't be allocated from");
+							assert(validCount > 0 && "Allocator designed for stub did not apply to it");
+							assert(allocedStubs > 0 && "New allocate couldn't be allocated from");
+
+							curAlloc->next = stubAllocHead;
+							*stubAllocHeadPtr = curAlloc;
 
 							for (unsigned tempIndex = 0; tempIndex < allocedStubs; ++tempIndex)
 							{
@@ -538,7 +546,7 @@ namespace
 			return allocated;
 		}
 
-		static unsigned GatherUniqueAllocators(Allocator* headAlloc, Allocator **outAllocs, InjectionStub** list, unsigned count)
+		static unsigned GatherUniqueAllocators(Allocator* headAlloc, Allocator** outAllocs, InjectionStub** list, unsigned count)
 		{
 			unsigned uniqueAllocCount = 0;
 
@@ -585,12 +593,12 @@ namespace
 				protect::UnprotectStubAllocator(stubAllocs[allocIndex]);
 		}
 
-		static void DeallocateHooks(Allocator *hookAlloc, FuncHook **hooks, unsigned count)
+		static void DeallocateHooks(Allocator* hookAlloc, FuncHook** hooks, unsigned count)
 		{
 			free::Free(hookAlloc, hooks, count);
 		}
 
-		static void DeallocateStubs(Allocator* stubAlloc, InjectionStub **stubs, unsigned count)
+		static void DeallocateStubs(Allocator* stubAlloc, InjectionStub** stubs, unsigned count)
 		{
 			free::Free(stubAlloc, stubs, count);
 		}
@@ -645,7 +653,7 @@ namespace
 
 				ZydisDecodedInstruction inst;
 
-				if (DecodeInstruction(disasm, bodyPtr, &inst))
+				if (!DecodeInstruction(disasm, bodyPtr, &inst))
 				{
 					if (bodyPtr == reinterpret_cast<uint8_t*>(Func))
 						bodyPtr = lastBodyPtr;
@@ -657,8 +665,6 @@ namespace
 				{
 					const ZydisDecodedOperand& op = inst.operands[0];
 					uintptr_t absAddr;
-
-					assert(inst.operand_count == 1);
 
 					switch (op.type)
 					{
@@ -731,204 +737,207 @@ namespace
 			{
 				const ZydisDecodedOperand& op = inst.operands[opIndex];
 
-				/* We know an operation can only have 1 operand we care about.
+				if (op.visibility == ZYDIS_OPERAND_VISIBILITY_EXPLICIT)
+				{
+					/* We know an operation can only have 1 operand we care about.
 				   Thanks to that, we don't need to store modifications from previous
 				   operands and can return as soon as 1 modification takes place.
 				   This really simplifies the code, as we can assume no modifications
 				   have taken place yet. */
-				switch (op.type)
-				{
-				case ZYDIS_OPERAND_TYPE_IMMEDIATE:
-					if (op.imm.is_relative) // Relative offset (loops, jumps, calls)
+					switch (op.type)
 					{
-						const intptr_t offset = op.imm.is_signed ? op.imm.value.s : (intptr_t)op.imm.value.u;
-						const intptr_t movedOffset = RelocateOffset(offset, curFromAddr, curToAddr);
-						const int64_t farOffset64 = (1ll << 31) - 1;
-						const intptr_t farOffset = static_cast<intptr_t>(farOffset64);
-						const uint8_t* const offsetTarget = curFromAddr + inst.length + offset;
-
-						if (offsetTarget >= baseFromAddr && offsetTarget < baseFromEndAddr) // Move a relative instruction targeting our move area
+					case ZYDIS_OPERAND_TYPE_IMMEDIATE:
+						if (op.imm.is_relative) // Relative offset (loops, jumps, calls)
 						{
-							// We only care about relative calls here, which mean we need they
-							// are storing an instruction pointer which we will need to alter.
-							if (inst.mnemonic == ZYDIS_MNEMONIC_CALL)
+							const intptr_t offset = op.imm.is_signed ? op.imm.value.s : (intptr_t)op.imm.value.u;
+							const intptr_t movedOffset = RelocateOffset(offset, curFromAddr, curToAddr);
+							const int64_t farOffset64 = (1ll << 31) - 1;
+							const intptr_t farOffset = static_cast<intptr_t>(farOffset64);
+							const uint8_t* const offsetTarget = curFromAddr + inst.length + offset;
+
+							if (offsetTarget >= baseFromAddr && offsetTarget < baseFromEndAddr) // Move a relative instruction targeting our move area
 							{
-								if (offset < 0)
-									return false; // Negative rleative calls within the target aren't supported
-								else
+								// We only care about relative calls here, which mean we need they
+								// are storing an instruction pointer which we will need to alter.
+								if (inst.mnemonic == ZYDIS_MNEMONIC_CALL)
 								{
-									assert(inst.length == 5);
-
-									// The call to 0 or just jumping a nop. Change it to a push and be done with it.
-									new (curToAddr) ASM::X86::PushU32(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(curFromAddr)) + 5); // 5 is the size of the relative call
-									curToAddr += sizeof(ASM::X86::PushU32);
-
-									if (offset > 127) // need a regular jump
+									if (offset < 0)
+										return false; // Negative rleative calls within the target aren't supported
+									else
 									{
-										new (curToAddr) ASM::X86::Jmp(curToAddr, curToAddr + offset);
-										curToAddr += sizeof(ASM::X86::Jmp);
+										assert(inst.length == 5);
+
+										// The call to 0 or just jumping a nop. Change it to a push and be done with it.
+										new (curToAddr) ASM::X86::PushU32(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(curFromAddr)) + 5); // 5 is the size of the relative call
+										curToAddr += sizeof(ASM::X86::PushU32);
+
+										if (offset > 127) // need a regular jump
+										{
+											new (curToAddr) ASM::X86::Jmp(curToAddr, curToAddr + offset);
+											curToAddr += sizeof(ASM::X86::Jmp);
+										}
+										else if (offset >= 2) // A short jump will do
+										{
+											new (curToAddr) ASM::X86::SJmp(static_cast<int8_t>(offset));
+											curToAddr += sizeof(ASM::X86::SJmp);
+										}
 									}
-									else if (offset >= 2) // A short jump will do
+								}
+							}
+							else if (std::abs(movedOffset) > farOffset) // Move a relative instruction far
+							{
+								// Should only be possible in 64 bit code
+								if constexpr (sizeof(void*) == 8)
+								{
+									switch (inst.mnemonic)
 									{
-										new (curToAddr) ASM::X86::SJmp(static_cast<int8_t>(offset));
+									case ZYDIS_MNEMONIC_CALL:
+									{
+										// A call is just a push and a jump. So push our new return address (just past the long jump)
+										const uint64_t returnAddr = reinterpret_cast<uint64_t>(curToAddr) + sizeof(ASM::X64::PushU64) + sizeof(ASM::X64::LJmp);
+										new (curToAddr) ASM::X64::PushU64(returnAddr);
+										curToAddr += sizeof(ASM::X64::PushU64);
+									}
+									break;
+									case ZYDIS_MNEMONIC_JMP:
+										// Unconditional jump. This trivial case only requires a long jump, so do nothing here
+										break;
+									default:
+										// All other jumps are on some condition. Lets just be a little tricky.
+										// We'll change these jumps offsets to be jumping to our long jump over
+										// an unconditional short jump which jumps over the long jump. That way,
+										// if the condition is satisfied, we jump, otherwise, we skip it.
+
+										std::memcpy(curToAddr, curFromAddr, inst.length);                  // Start by just copying the operaion over
+										curToAddr += inst.length;
+
+										// All 32 bit conditional jumps follow a pattern. Their only difference
+										// from their 8 bit sisters are they are preceeded by a 0x0F byte and
+										// their opcode is 0x10 larger. Lets convert 32 bit operations to 8 bit
+										// if we can for efficiencies sake.
+										if (op.size == 32)
+										{
+											curToAddr -= sizeof(uint32_t) + 1; // Back up to the operand
+											uint8_t operand = *curToAddr--;    // Grab the operand and shift back to the 0xF byte.
+											*curToAddr = operand - 0x10;       // Write in the 8bit operand
+											curToAddr += 2;                    // Shift curTo to where it would have been had we read an 8bit jmp from the start
+										}
+
+										*(curToAddr - 1) = sizeof(ASM::X86::SJmp);         // And make it a jump over a single short jump
+
+										new (curToAddr) ASM::X86::SJmp(sizeof(ASM::X64::LJmp)); // Add in our unconditional jump over the long jump
 										curToAddr += sizeof(ASM::X86::SJmp);
 									}
+
+									// Now that we've gotten the clever hacks out of the way, we can preform our long jump.
+									new (curToAddr) ASM::X64::LJmp(curFromAddr + offset); // And make an absolute address out of it.
 								}
 							}
-						}
-						else if (std::abs(movedOffset) > farOffset) // Move a relative instruction far
-						{
-							// Should only be possible in 64 bit code
-							if constexpr (sizeof(void*) == 8)
+							else if (op.size == 8) // Move a short relative instruction far
 							{
+								const intptr_t oldOffset = op.imm.value.s;
+								const intptr_t newOffset = oldOffset + (curToAddr - curFromAddr);
+
 								switch (inst.mnemonic)
 								{
-								case ZYDIS_MNEMONIC_CALL:
-								{
-									// A call is just a push and a jump. So push our new return address (just past the long jump)
-									const uint64_t returnAddr = reinterpret_cast<uint64_t>(curToAddr) + sizeof(ASM::X64::PushU64) + sizeof(ASM::X64::LJmp);
-									new (curToAddr) ASM::X64::PushU64(returnAddr);
-									curToAddr += sizeof(ASM::X64::PushU64);
-								}
-								break;
 								case ZYDIS_MNEMONIC_JMP:
-									// Unconditional jump. This trivial case only requires a long jump, so do nothing here
+									new (curToAddr) ASM::X86::Jmp(static_cast<int32_t>(newOffset)); // Converting a short jump to a regular jump is trivial.
+									curToAddr += sizeof(ASM::X86::Jmp);
 									break;
-								default:
-									// All other jumps are on some condition. Lets just be a little tricky.
-									// We'll change these jumps offsets to be jumping to our long jump over
-									// an unconditional short jump which jumps over the long jump. That way,
-									// if the condition is satisfied, we jump, otherwise, we skip it.
+								case ZYDIS_MNEMONIC_JCXZ: case ZYDIS_MNEMONIC_JRCXZ: case ZYDIS_MNEMONIC_JECXZ:
+								case ZYDIS_MNEMONIC_LOOP: case ZYDIS_MNEMONIC_LOOPE: case ZYDIS_MNEMONIC_LOOPNE:
+									// All these instructions are conditional jumps with no 32 bit counterpart.
+									// Let's instead made them jump to a jump to our new offset right over a
+									// jump past our jump to the new offset, thus keeping the condititon and
+									// getting a jump with larger range.
 
-									std::memcpy(curToAddr, curFromAddr, inst.length);                  // Start by just copying the operaion over
+									std::memcpy(curToAddr, curFromAddr, inst.length); // Start by copying over the operation
 									curToAddr += inst.length;
 
-									// All 32 bit conditional jumps follow a pattern. Their only difference
-									// from their 8 bit sisters are they are preceeded by a 0x0F byte and
-									// their opcode is 0x10 larger. Lets convert 32 bit operations to 8 bit
-									// if we can for efficiencies sake.
-									if (op.size == 32)
-									{
-										curToAddr -= sizeof(uint32_t) + 1; // Back up to the operand
-										uint8_t operand = *curToAddr--;    // Grab the operand and shift back to the 0xF byte.
-										*curToAddr = operand - 0x10;       // Write in the 8bit operand
-										curToAddr += 2;                    // Shift curTo to where it would have been had we read an 8bit jmp from the start
-									}
+									*(curToAddr - 1) = sizeof(ASM::X86::SJmp);        // Then change the offset to be over a short jump and to our regular jump
 
-									*(curToAddr - 1) = sizeof(ASM::X86::SJmp);         // And make it a jump over a single short jump
-
-									new (curToAddr) ASM::X86::SJmp(sizeof(ASM::X64::LJmp)); // Add in our unconditional jump over the long jump
+									new (curToAddr) ASM::X86::SJmp(sizeof(ASM::X86::Jmp)); // If our condition failed, jump over our regular jump
 									curToAddr += sizeof(ASM::X86::SJmp);
+
+									new (curToAddr) ASM::X86::Jmp(static_cast<int32_t>(newOffset)); // Now, we can safely jump to our new offset only if the condition succeeded.
+									curToAddr += sizeof(ASM::X86::Jmp);
+									break;
+								default:
+									// All other 8 bit conditional jumps share a pattern. To get to their 32
+									// bit counterpart, all you need to do is preceed the opcode with a 0x0F
+									// byte and add 0x10 to the opcode itself.
+
+									std::memcpy(curToAddr, curFromAddr, inst.length);// Copy over the operation (to save any potential prefix bytes)
+									curToAddr += inst.length;
+
+									curToAddr -= 2;                     // Backup our write pointer to the opcode.
+									uint8_t opcode = *curToAddr + 0x10; // Make the new 32 bit opcode
+
+									*curToAddr++ = 0x0F;                // Write in the 0xF byte.
+									*curToAddr++ = opcode;              // Then the 32 bit version of the opcode.
+
+									*((int32_t*)curToAddr++) = static_cast<int32_t>(newOffset); // Now we can safely write in our offset
 								}
-
-								// Now that we've gotten the clever hacks out of the way, we can preform our long jump.
-								new (curToAddr) ASM::X64::LJmp(curFromAddr + offset); // And make an absolute address out of it.
 							}
-						}
-						else if (op.size == 8) // Move a short relative instruction far
-						{
-							const intptr_t oldOffset = op.imm.value.s;
-							const intptr_t newOffset = oldOffset + (curToAddr - curFromAddr);
-
-							switch (inst.mnemonic)
+							else // Moving sone other relative instruction (no special handling)
 							{
-							case ZYDIS_MNEMONIC_JMP:
-								new (curToAddr) ASM::X86::Jmp(static_cast<int32_t>(newOffset)); // Converting a short jump to a regular jump is trivial.
-								curToAddr += sizeof(ASM::X86::Jmp);
-								break;
-							case ZYDIS_MNEMONIC_JCXZ: case ZYDIS_MNEMONIC_JRCXZ: case ZYDIS_MNEMONIC_JECXZ:
-							case ZYDIS_MNEMONIC_LOOP: case ZYDIS_MNEMONIC_LOOPE: case ZYDIS_MNEMONIC_LOOPNE:
-								// All these instructions are conditional jumps with no 32 bit counterpart.
-								// Let's instead made them jump to a jump to our new offset right over a
-								// jump past our jump to the new offset, thus keeping the condititon and
-								// getting a jump with larger range.
+								const intptr_t oldOffset = op.imm.value.s;
+								const intptr_t newOffset = oldOffset + (curToAddr - curFromAddr);
 
-								std::memcpy(curToAddr, curFromAddr, inst.length); // Start by copying over the operation
+								std::memcpy(curToAddr, curFromAddr, inst.length); // Copy over the operation
 								curToAddr += inst.length;
 
-								*(curToAddr - 1) = sizeof(ASM::X86::SJmp);        // Then change the offset to be over a short jump and to our regular jump
+								curToAddr -= sizeof(int32_t);  // Backup curTo to where we write the address.
 
-								new (curToAddr) ASM::X86::SJmp(sizeof(ASM::X86::Jmp)); // If our condition failed, jump over our regular jump
-								curToAddr += sizeof(ASM::X86::SJmp);
-
-								new (curToAddr) ASM::X86::Jmp(static_cast<int32_t>(newOffset)); // Now, we can safely jump to our new offset only if the condition succeeded.
-								curToAddr += sizeof(ASM::X86::Jmp);
-								break;
-							default:
-								// All other 8 bit conditional jumps share a pattern. To get to their 32
-								// bit counterpart, all you need to do is preceed the opcode with a 0x0F
-								// byte and add 0x10 to the opcode itself.
-
-								std::memcpy(curToAddr, curFromAddr, inst.length);// Copy over the operation (to save any potential prefix bytes)
-								curToAddr += inst.length;
-
-								curToAddr -= 2;                     // Backup our write pointer to the opcode.
-								uint8_t opcode = *curToAddr + 0x10; // Make the new 32 bit opcode
-
-								*curToAddr++ = 0x0F;                // Write in the 0xF byte.
-								*curToAddr++ = opcode;              // Then the 32 bit version of the opcode.
-
-								*((int32_t*)curToAddr++) = static_cast<int32_t>(newOffset); // Now we can safely write in our offset
+								*((int32_t*)curToAddr++) = static_cast<int32_t>(newOffset); // And write in the new address
 							}
 						}
-						else // Moving sone other relative instruction (no special handling)
+						break;
+					case ZYDIS_OPERAND_TYPE_MEMORY: // Register + offset ptr (eg: [RIP+0x2])
+						if (op.mem.base == ZYDIS_REGISTER_RIP || op.mem.index == ZYDIS_REGISTER_RIP) // Handle RIP relative addressing.
 						{
-							const intptr_t oldOffset = op.imm.value.s;
-							const intptr_t newOffset = oldOffset + (curToAddr - curFromAddr);
+							const int32_t offset = static_cast<int32_t>(op.mem.disp.value);
+							const int32_t scale = (op.mem.index == ZYDIS_REGISTER_RIP) ? (1 << op.mem.scale) : 1;
+							const intptr_t target = reinterpret_cast<intptr_t>(curFromAddr) * scale + offset;
+							const intptr_t newOffset = target - reinterpret_cast<intptr_t>(curToAddr);
 
-							std::memcpy(curToAddr, curFromAddr, inst.length); // Copy over the operation
+							// Sadly, our new offset is just to big. We cannot relate to this new address.
+							if (std::abs(newOffset) > (1u << 31) - 1)
+								return false;
+
+							// I really should recompile the instruction, but for that I would
+							// basically have to build and integrate an assembler, which I believe
+							// wouldn't be worth the effort.
+							// Instead, I'll just copy over the instruction and look for the old
+							// offset starting from the back. When (if) I find it, I'll overwrite
+							// it with the new one.
+
+							const uint8_t* const offsStart = curToAddr + 1;
+							std::memcpy(curToAddr, curFromAddr, inst.length);
 							curToAddr += inst.length;
 
-							curToAddr -= sizeof(int32_t);  // Backup curTo to where we write the address.
-
-							*((int32_t*)curToAddr++) = static_cast<int32_t>(newOffset); // And write in the new address
-						}
-					}
-					break;
-				case ZYDIS_OPERAND_TYPE_MEMORY: // Register + offset ptr (eg: [RIP+0x2])
-					if (op.mem.base == ZYDIS_REGISTER_RIP || op.mem.index == ZYDIS_REGISTER_RIP) // Handle RIP relative addressing.
-					{
-						const int32_t offset = static_cast<int32_t>(op.mem.disp.value);
-						const int32_t scale = (op.mem.index == ZYDIS_REGISTER_RIP) ? (1 << op.mem.scale) : 1;
-						const intptr_t target = reinterpret_cast<intptr_t>(curFromAddr)* scale + offset;
-						const intptr_t newOffset = target - reinterpret_cast<intptr_t>(curToAddr);
-
-						// Sadly, our new offset is just to big. We cannot relate to this new address.
-						if (std::abs(newOffset) > (1u << 31) - 1)
-							return false;
-
-						// I really should recompile the instruction, but for that I would
-						// basically have to build and integrate an assembler, which I believe
-						// wouldn't be worth the effort.
-						// Instead, I'll just copy over the instruction and look for the old
-						// offset starting from the back. When (if) I find it, I'll overwrite
-						// it with the new one.
-
-						const uint8_t* const offsStart = curToAddr + 1;
-						std::memcpy(curToAddr, curFromAddr, inst.length);
-						curToAddr += inst.length;
-
-						// We can add only go to 2 bytes after the start of the operation,
-						// as because of the REX prefix and the opcode we're guaranteed
-						// those CANNOT be our offset.
-						uint8_t* curPos;
-						for (curPos = curToAddr - sizeof(int32_t); curPos > offsStart; --curPos)
-						{
-							if (*((int32_t*)curPos) == offset)
+							// We can add only go to 2 bytes after the start of the operation,
+							// as because of the REX prefix and the opcode we're guaranteed
+							// those CANNOT be our offset.
+							uint8_t* curPos;
+							for (curPos = curToAddr - sizeof(int32_t); curPos > offsStart; --curPos)
 							{
-								*((int32_t*)curPos) = static_cast<int32_t>(newOffset);
-								break;
+								if (*((int32_t*)curPos) == offset)
+								{
+									*((int32_t*)curPos) = static_cast<int32_t>(newOffset);
+									break;
+								}
 							}
+
+							if (curPos <= offsStart)
+								return false; // If we got here, we didn't find our offset.
 						}
-
-						if (curPos <= offsStart)
-							return false; // If we got here, we didn't find our offset.
+						break;
 					}
-					break;
-				}
 
-				if (curToAddr != *curToAddrPtr) // We've copied the instruction
-					break;
+					if (curToAddr != *curToAddrPtr) // We've copied the instruction
+						break;
+				}
 			}
 
 			if (curToAddr == *curToAddrPtr) // this instruction still needs to be copied
@@ -942,40 +951,40 @@ namespace
 			return true;
 		}
 
-		static bool RelocateHeader(const ZydisDecoder& disasm, FuncHook* inoutHook)
+		static uint8_t RelocateHeader(const ZydisDecoder& disasm, unsigned minOverwriteSize, const FuncHook& hook, unsigned* outOptMovedInstructions)
 		{
-			const uint8_t* const baseFromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
-			const uint8_t* const baseFromAddrEnd = baseFromAddr + inoutHook->overwriteSize;
+			const uint8_t* const baseFromAddr = reinterpret_cast<uint8_t*>(hook.funcBody);
+			const uint8_t* const baseFromAddrEnd = baseFromAddr + minOverwriteSize;
 			const uint8_t* fromAddr = baseFromAddr;
-			uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
-			const unsigned minMoveSize = inoutHook->overwriteSize;
+			uint8_t* toAddr = reinterpret_cast<uint8_t*>(hook.stub->funcHeader);
+			const unsigned minMoveSize = minOverwriteSize;
 			unsigned moveSize = 0;
+			unsigned movedInstructions = 0;
 
 			while (moveSize < minMoveSize)
 			{
 				ZydisDecodedInstruction inst;
 
 				if (!DecodeInstruction(disasm, fromAddr, &inst))
-					return false;
+					return 0;
 				else
 				{
 					const unsigned instSize = inst.length;
 
-					// If the whole header fits in 1 operation, we know we won't need to
-					// pause threads while overwriting the function header as no thread
-					// can possibly be in the middle of an operation.
-					if (instSize >= minMoveSize && moveSize == 0)
-						inoutHook->hotpatchable = true;
-
 					if (!RelocateCopyInstruction(inst, baseFromAddr, baseFromAddrEnd, &fromAddr, &toAddr))
-						return false;
+						return 0;
 
 					moveSize += instSize;
+					++movedInstructions;
 				}
 			}
 
+			if (outOptMovedInstructions)
+				*outOptMovedInstructions = movedInstructions;
 
-			return true;
+			assert(moveSize < 256 && "Move size won't fit in u8");
+
+			return static_cast<uint8_t>(moveSize);
 		}
 
 		static bool InitializeHook(const ZydisDecoder& disasm, Hook_FuncPtr InjectionFunc, void* funcBody, void* stubMemPtr, FuncHook* outHook)
@@ -1013,9 +1022,10 @@ namespace
 			std::memset(outHook, 0, sizeof(*outHook));
 
 			// If we found a deadzone, we can setup a proxy, yay!
+			unsigned minOverwriteSize;
 			if (deadZone)
 			{
-				outHook->overwriteSize = sizeof(ASM::X86::SJmp);
+				minOverwriteSize = sizeof(ASM::X86::SJmp);
 				outHook->injectionJumpTarget = deadZone;
 
 				// Make a copy of the (deadzone) region we'll be overwriting,
@@ -1028,7 +1038,7 @@ namespace
 				// No deadzone. Can't write a 2 byte proxy. Determine overwrite size.
 
 				outHook->proxyBackupSize = 0;
-				outHook->overwriteSize = sizeof(ASM::X86::Jmp);
+				minOverwriteSize = sizeof(ASM::X86::Jmp);
 				outHook->injectionJumpTarget = InjectionFunc;
 
 				if constexpr (sizeof(void*) == 8)
@@ -1045,20 +1055,69 @@ namespace
 				}
 			}
 
-			std::memcpy(outHook->headderBackup, funcMem, outHook->overwriteSize);
+			// Get the actual overwrite size by counting the number of instructions our jump will displace
+			unsigned movedInstructions;
+			outHook->overwriteSize = RelocateHeader(disasm, minOverwriteSize, *outHook, &movedInstructions);
+			assert(outHook->overwriteSize <= sizeof(outHook->headerOverwrite));
 
-			new (stubMemPtr) InjectionStub(funcMem, InjectionFunc, outHook->overwriteSize);
-			outHook->stub = reinterpret_cast<InjectionStub*>(stubMemPtr);
-			outHook->InjectionFunc = InjectionFunc;
-			outHook->funcBody = funcBody;
+			// RelocateHeader returns 0 on failure
+			if (outHook->overwriteSize)
+			{
+				static constexpr uint8_t nopOpcode = 0x90;
+				static constexpr uint8_t int3Opcode = 0xCC;
+				static constexpr size_t LONG_JUMP = sizeof(ASM::X64::LJmp);
+				static constexpr size_t JUMP = sizeof(ASM::X86::Jmp);
+				static constexpr size_t SHORT_JUMP = sizeof(ASM::X86::SJmp);
 
-			return RelocateHeader(disasm, outHook);
+				// Copy over the header of the function that we'll be overwriting
+				std::memcpy(outHook->headderBackup, funcMem, outHook->overwriteSize);
+				std::memset(outHook->headerOverwrite, nopOpcode, outHook->overwriteSize);
+
+				// Just for safety, fill our buffers with int3 (break)
+				std::memset(outHook->headderBackup + outHook->overwriteSize, int3Opcode, sizeof(outHook->headderBackup) - outHook->overwriteSize);
+				std::memset(outHook->headerOverwrite + outHook->overwriteSize, int3Opcode, sizeof(outHook->headerOverwrite) - outHook->overwriteSize);
+
+				// Write out jump into the overwrite to save on ops later when the hook is actually installed
+				switch (minOverwriteSize)
+				{
+				case LONG_JUMP:
+					new (outHook->headerOverwrite) ASM::X64::LJmp(outHook->injectionJumpTarget);
+					break;
+				case JUMP:
+					new (outHook->headerOverwrite) ASM::X86::Jmp(funcBody, outHook->injectionJumpTarget);
+					break;
+				case SHORT_JUMP:
+					new (outHook->headerOverwrite) ASM::X86::SJmp(funcBody, outHook->injectionJumpTarget);
+					break;
+				default:
+					assert(0 && "Unknown hook overwrite size");
+				}
+
+				new (stubMemPtr) InjectionStub(funcMem, InjectionFunc, outHook->overwriteSize);
+				outHook->stub = reinterpret_cast<InjectionStub*>(stubMemPtr);
+				outHook->InjectionFunc = InjectionFunc;
+				outHook->funcBody = funcBody;
+
+				// If we've only moved 1 instruction, and that instruction was a width that can be written to atomicly,
+				// then we can patch the function hook in without having to worry about threads being in the middle
+				// of an instruction, meaning we don't need to pause threads or worry about relocating instruction
+				// pointers
+				outHook->hotpatchable = movedInstructions == 1 && (
+					(outHook->overwriteSize == sizeof(uint16_t) && std::atomic_uint16_t::is_always_lock_free) ||
+					(outHook->overwriteSize == sizeof(uint32_t) && std::atomic_uint32_t::is_always_lock_free) ||
+					(outHook->overwriteSize == sizeof(uint64_t) && std::atomic_uint64_t::is_always_lock_free)
+					);
+
+				return true;
+			}
+
+			return false;
 		}
 	}
 
 	namespace modify
 	{
-		static unsigned GatherPrivilegePages(FuncHook **hookPtrs, unsigned count, bool forInstall, const void** outPages)
+		static unsigned GatherPrivilegePages(FuncHook** hookPtrs, unsigned count, bool forInstall, const void** outPages)
 		{
 			unsigned validCount = 0;
 
@@ -1068,10 +1127,10 @@ namespace
 
 				if (hook && hook->isInstalled == !forInstall)
 				{
-					const uint8_t * const funcMemStart = reinterpret_cast<uint8_t*>(hook->funcBody) - hook->proxyBackupSize;
+					const uint8_t* const funcMemStart = reinterpret_cast<uint8_t*>(hook->funcBody) - hook->proxyBackupSize;
 					const uintptr_t funcAddrStart = reinterpret_cast<uintptr_t>(funcMemStart);
 					const uintptr_t funcPageAddr = funcAddrStart & ~0xFFF;
-					
+
 					outPages[validCount] = reinterpret_cast<void*>(funcPageAddr);
 					++validCount;
 				}
@@ -1117,14 +1176,23 @@ namespace
 			HANDLE thread;
 			int oldPriority;
 
-			RAIITimeCriticalBlock() : thread(GetCurrentThread()), oldPriority(GetThreadPriority(thread))
+			explicit RAIITimeCriticalBlock(bool setOnInit) : thread(GetCurrentThread()), oldPriority(GetThreadPriority(thread))
 			{
-				SetThreadPriority(thread, THREAD_PRIORITY_TIME_CRITICAL);
+				if (setOnInit)
+					SetTimeCritical();
 			}
+
+			RAIITimeCriticalBlock() : RAIITimeCriticalBlock(true)
+			{}
 
 			~RAIITimeCriticalBlock()
 			{
 				SetThreadPriority(thread, oldPriority);
+			}
+
+			void SetTimeCritical()
+			{
+				SetThreadPriority(thread, THREAD_PRIORITY_TIME_CRITICAL);
 			}
 
 			RAIITimeCriticalBlock(const RAIITimeCriticalBlock&) = delete;
@@ -1232,7 +1300,7 @@ namespace
 				static constexpr NTSTATUS STATUS_SUCCESS = 0x00000000UL;
 
 				template<typename T>
-				static T GetNtDLLFuncPtr(const char *funcName)
+				static T GetNtDLLFuncPtr(const char* funcName)
 				{
 					const HMODULE ntdll = LoadLibraryA("ntdll.dll");
 					return (T)GetProcAddress(ntdll, funcName);
@@ -1280,7 +1348,7 @@ namespace
 				return false;
 			}
 
-			static bool GatherProcessThreads(const DWORD procId, const void *procInfoSnapshotMem, HANDLE** inoutThreadList, unsigned* inoutMaxThreadCount, unsigned *inoutThreadCount)
+			static bool GatherProcessThreads(const DWORD procId, const void* procInfoSnapshotMem, HANDLE** inoutThreadList, unsigned* inoutMaxThreadCount, unsigned* inoutThreadCount)
 			{
 				const win_internal::SYSTEM_PROCESS_INFORMATION* procInfoSnapshot = reinterpret_cast<const win_internal::SYSTEM_PROCESS_INFORMATION*>(procInfoSnapshotMem);
 				const HANDLE procIdHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(procId));
@@ -1317,7 +1385,7 @@ namespace
 					}
 
 					unsigned outThreadIndex = inThreadListCount;
-					HANDLE* const threadListEnd = threadList + outThreadIndex; 					
+					HANDLE* const threadListEnd = threadList + outThreadIndex;
 					for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
 					{
 						const win_internal::SYSTEM_THREAD_INFORMATION& threadInfo = procInfo.Threads[threadIndex];
@@ -1341,7 +1409,7 @@ namespace
 							}
 						}
 					}
-					
+
 					*inoutThreadCount = outThreadIndex;
 					return true;
 				}
@@ -1358,9 +1426,14 @@ namespace
 			unsigned threadCount;
 			unsigned maxThreadCount;
 
-			RAIISingleThreadBlock() : procId(GetCurrentProcessId()), thisThread(GetCurrentThread()), threadList(nullptr), threadCount(0), maxThreadCount(0)
+			explicit RAIISingleThreadBlock(bool pauseOnInit) : procId(GetCurrentProcessId()), thisThread(GetCurrentThread()), threadList(nullptr), threadCount(0), maxThreadCount(0)
 			{
-				PauseAnyNewThreads();
+				if (pauseOnInit)
+					PauseAnyNewThreads();
+			}
+
+			RAIISingleThreadBlock() : RAIISingleThreadBlock(true)
+			{
 			}
 
 			~RAIISingleThreadBlock()
@@ -1415,6 +1488,18 @@ namespace
 #else //#ifdef _X86_
 			return &context->Rip;
 #endif //#else //#ifdef _X86_
+		}
+
+
+		template<typename T>
+		static __forceinline void InstallHookAtomicly(void *funcBodyMem, void *overwrite)
+		{
+			std::atomic<T>* const funcBody = reinterpret_cast<std::atomic<T>*>(funcBodyMem);
+			const T overwriteOps = *reinterpret_cast<const T*>(overwrite);
+
+			static_assert(std::is_unsigned_v<T> && std::is_integral_v<T> && std::atomic<T>::is_always_lock_free, "Invalid atomic hook type");
+
+			funcBody->store(overwriteOps, std::memory_order_seq_cst);
 		}
 
 #if 0
@@ -1495,7 +1580,7 @@ namespace
 				}
 			}
 		threads_partitioned:
-			
+
 			const unsigned volatileThreadCount = static_cast<unsigned>(outThreadIndices - threadIndices);
 
 			if (volatileThreadCount)
@@ -1534,17 +1619,21 @@ namespace
 				for (unsigned hookIndex = 0; hookIndex < hookCount; ++hookIndex)
 				{
 					const FuncHook& hook = *hooks[hookIndex];
-					const uintptr_t overwriteStart = reinterpret_cast<uintptr_t>(hook.funcBody);
-					const uintptr_t overwriteEnd = overwriteStart + hook.overwriteSize;
 
-					if (ip >= overwriteStart && ip < overwriteEnd)
+					if (!hook.hotpatchable)
 					{
-						const uintptr_t destStart = reinterpret_cast<uintptr_t>(hook.stub);
-						const uintptr_t destOffset = ip - overwriteStart;
+						const uintptr_t overwriteStart = reinterpret_cast<uintptr_t>(hook.funcBody);
+						const uintptr_t overwriteEnd = overwriteStart + hook.overwriteSize;
 
-						*ctxIP = destStart + destOffset;
-						SetThreadContext(thread, &threadContext);
-						break;
+						if (ip >= overwriteStart && ip < overwriteEnd)
+						{
+							const uintptr_t destStart = reinterpret_cast<uintptr_t>(hook.stub);
+							const uintptr_t destOffset = ip - overwriteStart;
+
+							*ctxIP = destStart + destOffset;
+							SetThreadContext(thread, &threadContext);
+							break;
+						}
 					}
 				}
 			}
@@ -1557,8 +1646,8 @@ extern "C"
 	struct FuncHooker* Hook_CreateContext(void)
 	{
 		uint8_t* const ctxMemStart = (uint8_t*)VirtualAlloc(nullptr, mem::ALLOC_RESERVE_SIZE, MEM_RESERVE, PAGE_NOACCESS);
-		uint8_t *memCur = (uint8_t*)VirtualAlloc(ctxMemStart, mem::ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
-		
+		uint8_t* memCur = (uint8_t*)VirtualAlloc(ctxMemStart, mem::ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
+
 		if (memCur)
 		{
 			FuncHooker* const ctx = (FuncHooker*)memCur;
@@ -1571,8 +1660,8 @@ extern "C"
 			ctx->hookAlloc->pageEnd -= sizeof(FuncHooker);
 			ctx->hookAlloc->end -= sizeof(FuncHooker);
 
-			assert((ctx->hookAlloc->pageEnd & (mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->pageEnd);
-			assert((ctx->hookAlloc->end & (mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->end);
+			assert((ctx->hookAlloc->pageEnd & ~(mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->pageEnd);
+			assert((ctx->hookAlloc->end & ~(mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->end);
 
 			ctx->stubAlloc = nullptr;
 
@@ -1674,13 +1763,28 @@ extern "C"
 		const void** const privAddrs = (const void**)valloca(sizeof(void**) * count);
 		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, true, privAddrs);
 		DWORD* const oldPrivileges = (DWORD*)valloca(sizeof(DWORD) * privAddrCount);
+		bool allHotpatchable = true;
+
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+			if (!funcHooks[hookIndex]->hotpatchable)
+			{
+				allHotpatchable = false;
+				break;
+			}
+		}
 
 		// We need to make every function page read/writeable, then make sure none of the
 		// functions are executing while we install the hooks. It's best to do that ASAP,
 		// so make our thread time critical while we do it.
+		// If all the hooks were hotpatchable, we don't need to worry about pausing all other 
+		// threads or being time critical.
+		// Note: If you're being nefarious and don't want to be detected, you should pause
+		//       all threads anyway, since otherwise setting page privellege could set off
+		//       red flags.
+		modify::RAIITimeCriticalBlock raiiTimeCritical(!allHotpatchable);
+		modify::RAIISingleThreadBlock raiiSingleThreaded(!allHotpatchable);
 		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, count);
-		modify::RAIITimeCriticalBlock raiiTimeCritical;
-		modify::RAIISingleThreadBlock raiiSingleThreaded;
 
 		// Make sure any thread IPs within the moved range are relocated to the stub
 		modify::RelocateMovedIPs(raiiSingleThreaded.threadList, raiiSingleThreaded.threadCount, funcHooks, count);
@@ -1692,28 +1796,30 @@ extern "C"
 			static constexpr size_t LONG_JUMP = sizeof(ASM::X64::LJmp);
 			static constexpr size_t JUMP = sizeof(ASM::X86::Jmp);
 			static constexpr size_t SHORT_JUMP = sizeof(ASM::X86::SJmp);
-			FuncHook * const hook = funcHooks[hookIndex];
+			FuncHook* const hook = funcHooks[hookIndex];
 
 			if (hook && !hook->isInstalled)
 			{
 				try
 				{
-					std::memset(hook->funcBody, nopOpcode, hook->overwriteSize);
-
-					switch (hook->overwriteSize)
+					if (hook->hotpatchable)
 					{
-					case LONG_JUMP:
-						new (hook->funcBody) ASM::X64::LJmp(hook->injectionJumpTarget);
-						break;
-					case JUMP:
-						new (hook->funcBody) ASM::X86::Jmp(hook->funcBody, hook->injectionJumpTarget);
-						break;
-					case SHORT_JUMP:
-						new (hook->funcBody) ASM::X86::SJmp(hook->funcBody, hook->injectionJumpTarget);
-						break;
-					default:
-						assert(0 && "Unknown hook overwrite size");
-						continue;
+						static constexpr size_t U16 = sizeof(uint16_t);
+						static constexpr size_t U32 = sizeof(uint32_t);
+						static constexpr size_t U64 = sizeof(uint64_t);
+
+						switch (hook->overwriteSize)
+						{
+						case U16: modify::InstallHookAtomicly<uint16_t>(hook->funcBody, hook->headerOverwrite); break;
+						case U32: modify::InstallHookAtomicly<uint32_t>(hook->funcBody, hook->headerOverwrite); break;
+						case U64: modify::InstallHookAtomicly<uint64_t>(hook->funcBody, hook->headerOverwrite); break;
+						default:
+							assert(0 && "Unknown overwrite size for hotpatchable hook");
+						}
+					}
+					else
+					{
+						std::memcpy(hook->funcBody, hook->headerOverwrite, hook->overwriteSize);
 					}
 
 					hook->isInstalled = true;
@@ -1782,7 +1888,7 @@ extern "C"
 		unsigned trampolineCount = 0;
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
-			const FuncHook * const hook = funcHooks[hookIndex];
+			const FuncHook* const hook = funcHooks[hookIndex];
 
 			if (hook && hook->isInstalled && hook->stub)
 			{
