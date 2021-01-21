@@ -1854,7 +1854,7 @@ extern "C"
 		//       red flags.
 		modify::RAIITimeCriticalBlock raiiTimeCritical(!allHotpatchable);
 		modify::RAIISingleThreadBlock raiiSingleThreaded(!allHotpatchable);
-		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, count);
+		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, privAddrCount);
 
 		// Make sure any thread IPs within the moved range are relocated to the stub
 		modify::RelocateMovedIPs(raiiSingleThreaded.threadList, raiiSingleThreaded.threadCount, funcHooks, count);
