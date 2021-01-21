@@ -1933,7 +1933,7 @@ extern "C"
 		// writes can't be done atomically.
 		modify::RAIITimeCriticalBlock raiiTimeCritical;
 		modify::RAIISingleThreadBlock raiiSingleThreaded;
-		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, count);
+		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, privAddrCount);
 
 		// Note: Proxies make this not work. Need to flush IPs out of dangerous zone instead!
 		//modify::RelocateMovedIPs(raiiSingleThreaded.threadList, raiiSingleThreaded.threadCount, funcHooks, count);
