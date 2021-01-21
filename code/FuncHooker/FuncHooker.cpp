@@ -19,43 +19,42 @@ namespace
 	template<>
 	struct InjectionStubImpl<8>
 	{
-		uint8_t funcHeader[128]; // All code rewrites considered, the absolute worst case scenario (a 14 byte long jump overwriting a table of 7 conditional short jumps each of which then need to be rewritten into long jumps) yields a maximum header size of 126 bytes. 2 bytes for padding because I like round numbers.
-		ASM::X64::LJmp executeInjectee;
+		uint8_t funcHeader[128 + sizeof(ASM::X64::LJmp)]; // All code rewrites considered, the absolute worst case scenario (a 14 byte long jump overwriting a table of 7 conditional short jumps each of which then need to be rewritten into long jumps) yields a maximum header size of 126 bytes. 2 bytes for padding because I like round numbers.
 		ASM::X64::LJmp executeInjector;
 
-		InjectionStubImpl(const uint8_t* funcMem, const Hook_FuncPtr InjectionPtr, unsigned overwriteSize) :
-			executeInjectee(funcMem + overwriteSize), // Absolute address :) 
+		InjectionStubImpl(const Hook_FuncPtr InjectionPtr) :
 			executeInjector(InjectionPtr)			  // This is only ever used if we needed a long proxy
 		{
-			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
-			std::memset(funcHeader, nop, sizeof(funcHeader));
+			static constexpr uint8_t int3 = 0xCC;
+			std::memset(funcHeader, int3, sizeof(funcHeader));
 		}
 
-		void SetInjectee(const void *funcMem, unsigned offset)
+		void SetInjectee(void *writeAddr, const void *funcMem, unsigned offset)
 		{
-			executeInjectee.addr.SetValue(reinterpret_cast<uintptr_t>(funcMem) + offset);
+			assert(writeAddr > funcHeader && writeAddr < (funcHeader + (sizeof(funcHeader) - sizeof(ASM::X64::LJmp))));
+
+			new (writeAddr) ASM::X64::LJmp{ reinterpret_cast<const uint8_t*>(funcMem) + offset };
 		}
 	};
 
 	template<>
 	struct InjectionStubImpl<4>
 	{
-		uint8_t funcHeader[32]; // All code rewrites considered, the absolute worst case scenario (a 5 byte jump overwriting a table of 2 conditional short jumps each of which then need to be rewritten into regular conditional jumps) then a 13 byte instruction yields a maximum header size of 23 bytes. A few bytes for padding because I like round numbers.
-		ASM::X86::Jmp executeInjectee;
+		uint8_t funcHeader[32 + sizeof(ASM::X86::Jmp)]; // All code rewrites considered, the absolute worst case scenario (a 5 byte jump overwriting a table of 2 conditional short jumps each of which then need to be rewritten into regular conditional jumps) then a 13 byte instruction yields a maximum header size of 23 bytes. A few bytes for padding because I like round numbers.
 
-		InjectionStubImpl(const uint8_t* funcMem, const Hook_FuncPtr InjectionPtr, unsigned overwriteSize) :
-			executeInjectee(reinterpret_cast<uint8_t*>(this) + offsetof(InjectionStubImpl<4>, executeInjectee),
-				funcMem + overwriteSize)  // Offset FuntionPtr by overwriteSize so we don't infinite loop our header function
+		InjectionStubImpl(const Hook_FuncPtr InjectionPtr) 
 		{
 			((void)InjectionPtr);
 
-			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
-			std::memset(funcHeader, nop, sizeof(funcHeader));
+			static constexpr uint8_t int3 = 0xCC;
+			std::memset(funcHeader, int3, sizeof(funcHeader));
 		}
 
-		void SetInjectee(const void* funcMem, unsigned offset)
+		void SetInjectee(void* writeAddr, const void* funcMem, unsigned offset)
 		{
-			executeInjectee.SetAddr(reinterpret_cast<uint8_t*>(this) + offsetof(InjectionStubImpl<4>, executeInjectee), reinterpret_cast<const uint8_t*>(funcMem) + offset);
+			assert(writeAddr > funcHeader && writeAddr < (funcHeader + (sizeof(funcHeader) - sizeof(ASM::X86::Jmp))));
+
+			new (writeAddr) ASM::X86::Jmp(writeAddr, reinterpret_cast<const uint8_t*>(funcMem) + offset);
 		}
 	};
 
@@ -961,40 +960,63 @@ namespace
 			return true;
 		}
 
-		static uint8_t RelocateHeader(const ZydisDecoder& disasm, unsigned minOverwriteSize, const FuncHook& hook, unsigned* outOptMovedInstructions)
+		template<size_t MAX_INSTRUCTIONS>
+		static unsigned GatherHeader(const ZydisDecoder& disasm, const uint8_t* headerAddr, unsigned minSize, ZydisDecodedInstruction (*outInstructions)[MAX_INSTRUCTIONS])
 		{
-			const uint8_t* const baseFromAddr = reinterpret_cast<uint8_t*>(hook.funcBody);
-			const uint8_t* const baseFromAddrEnd = baseFromAddr + minOverwriteSize;
-			const uint8_t* fromAddr = baseFromAddr;
-			uint8_t* toAddr = reinterpret_cast<uint8_t*>(hook.stub->funcHeader);
-			const unsigned minMoveSize = minOverwriteSize;
-			unsigned moveSize = 0;
-			unsigned movedInstructions = 0;
+			unsigned totalHeaderSize = 0;
+			unsigned headerInstructions = 0;
+			const uint8_t* curHeaderAddr = headerAddr;
 
-			while (moveSize < minMoveSize)
+			while (totalHeaderSize < minSize)
 			{
-				ZydisDecodedInstruction inst;
+				ZydisDecodedInstruction* const curInstruction = (*outInstructions) + headerInstructions;
 
-				if (!DecodeInstruction(disasm, fromAddr, &inst))
+				assert(headerInstructions <= MAX_INSTRUCTIONS);
+
+				if (!DecodeInstruction(disasm, curHeaderAddr, curInstruction))
 					return 0;
 				else
 				{
-					const unsigned instSize = inst.length;
+					totalHeaderSize += curInstruction->length;
+					++headerInstructions;
 
-					if (!RelocateCopyInstruction(inst, baseFromAddr, baseFromAddrEnd, &fromAddr, &toAddr))
-						return 0;
-
-					moveSize += instSize;
-					++movedInstructions;
 				}
 			}
 
-			if (outOptMovedInstructions)
-				*outOptMovedInstructions = movedInstructions;
+			return headerInstructions;
+		}
+
+		static unsigned RelocateHeader(const ZydisDecoder& disasm, unsigned minOverwriteSize, FuncHook *inoutHook, void **outOptHeaderEnd = nullptr)
+		{
+			const uint8_t* const baseFromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
+			const uint8_t* const baseFromAddrEnd = baseFromAddr + minOverwriteSize;
+			const uint8_t* fromAddr = baseFromAddr;
+			ZydisDecodedInstruction headerOps[16];
+			const unsigned headerOpCount = GatherHeader(disasm, baseFromAddr, minOverwriteSize, &headerOps);
+			uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
+			const unsigned minMoveSize = minOverwriteSize;
+			unsigned moveSize = 0;
+
+			for(unsigned headerOpIndex = 0; headerOpIndex < headerOpCount; ++headerOpIndex)
+			{
+				const ZydisDecodedInstruction& inst = headerOps[headerOpIndex];
+				const unsigned instSize = inst.length;
+
+				if (!RelocateCopyInstruction(inst, baseFromAddr, baseFromAddrEnd, &fromAddr, &toAddr))
+					return 0;
+
+				moveSize += instSize;
+			}
 
 			assert(moveSize < 256 && "Move size won't fit in u8");
+			assert(moveSize >= minMoveSize);
 
-			return static_cast<uint8_t>(moveSize);
+			inoutHook->overwriteSize = static_cast<uint8_t>(moveSize);
+
+			if (outOptHeaderEnd)
+				*outOptHeaderEnd = toAddr;
+
+			return headerOpCount;
 		}
 
 		static bool InitializeHook(const ZydisDecoder& disasm, Hook_FuncPtr InjectionFunc, void* funcBody, void* stubMemPtr, FuncHook* outHook)
@@ -1032,7 +1054,7 @@ namespace
 			std::memset(outHook, 0, sizeof(*outHook));
 			outHook->InjectionFunc = InjectionFunc;
 			outHook->funcBody = funcBody;
-			new (stubMemPtr) InjectionStub(funcMem, InjectionFunc, outHook->overwriteSize);
+			new (stubMemPtr) InjectionStub(InjectionFunc);
 			outHook->stub = reinterpret_cast<InjectionStub*>(stubMemPtr);
 
 			// If we found a deadzone, we can setup a proxy, yay!
@@ -1070,8 +1092,8 @@ namespace
 			}
 
 			// Get the actual overwrite size by counting the number of instructions our jump will displace
-			unsigned movedInstructions;
-			outHook->overwriteSize = RelocateHeader(disasm, minOverwriteSize, *outHook, &movedInstructions);
+			void* proxyEnd = nullptr;
+			const unsigned movedInstructions = RelocateHeader(disasm, minOverwriteSize, outHook, &proxyEnd);
 			assert(outHook->overwriteSize <= sizeof(outHook->headerOverwrite));
 
 			// RelocateHeader returns 0 on failure
@@ -1091,7 +1113,8 @@ namespace
 				std::memset(outHook->headderBackup + outHook->overwriteSize, int3Opcode, sizeof(outHook->headderBackup) - outHook->overwriteSize);
 				std::memset(outHook->headerOverwrite + outHook->overwriteSize, int3Opcode, sizeof(outHook->headerOverwrite) - outHook->overwriteSize);
 
-				outHook->stub->SetInjectee(funcMem, outHook->overwriteSize);
+				// Write in out jump to the injectee function write after the header
+				outHook->stub->SetInjectee(proxyEnd, funcMem, outHook->overwriteSize);
 
 				// Write out jump into the overwrite to save on ops later when the hook is actually installed
 				switch (minOverwriteSize)
@@ -1360,7 +1383,7 @@ namespace
 				return false;
 			}
 
-			static bool GatherProcessThreads(const DWORD procId, const void* procInfoSnapshotMem, HANDLE** inoutThreadList, unsigned* inoutMaxThreadCount, unsigned* inoutThreadCount)
+			static bool GatherProcessThreads(const DWORD procId, const void* procInfoSnapshotMem, HANDLE** inoutThreadList, DWORD **inoutThreadIdList, unsigned* inoutMaxThreadCount, unsigned* inoutThreadCount)
 			{
 				const win_internal::SYSTEM_PROCESS_INFORMATION* procInfoSnapshot = reinterpret_cast<const win_internal::SYSTEM_PROCESS_INFORMATION*>(procInfoSnapshotMem);
 				const HANDLE procIdHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(procId));
@@ -1380,24 +1403,31 @@ namespace
 					const unsigned threadCount = procInfo.uThreadCount;
 					unsigned maxThreadCount = *inoutMaxThreadCount;
 					HANDLE* threadList = *inoutThreadList;
+					DWORD* threadIdList = *inoutThreadIdList;
 
 					if (threadCount > maxThreadCount)
 					{
-						const unsigned requiredThreadMem = (threadCount + inThreadListCount) * sizeof(HANDLE);
+						static constexpr size_t perThreadSize = sizeof(HANDLE) + sizeof(DWORD);
+						const unsigned requiredThreadMem = (threadCount + inThreadListCount) * perThreadSize;
 						const unsigned alignedRequiredThreadMem = (requiredThreadMem + 0xFFFF) & ~0xFFFF;
 						HANDLE* const newThreadList = (HANDLE*)VirtualAlloc(nullptr, alignedRequiredThreadMem, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+						const unsigned newMaxThreadCount = alignedRequiredThreadMem / perThreadSize;
+						DWORD* const newThreadIdList = reinterpret_cast<DWORD*>(newThreadList + newMaxThreadCount);
 
 						std::memcpy(newThreadList, threadList, inThreadListCount * sizeof(HANDLE));
+						std::memcpy(newThreadIdList, threadIdList, inThreadListCount * sizeof(DWORD));
 						VirtualFree(threadList, 0, MEM_RELEASE);
 
 						threadList = newThreadList;
-						maxThreadCount = alignedRequiredThreadMem / sizeof(HANDLE);
+						threadIdList = newThreadIdList;
+						maxThreadCount = newMaxThreadCount;
 						*inoutMaxThreadCount = maxThreadCount;
 						*inoutThreadList = threadList;
+						*inoutThreadIdList = threadIdList;
 					}
 
-					unsigned outThreadIndex = inThreadListCount;
-					HANDLE* const threadListEnd = threadList + outThreadIndex;
+					unsigned outThreadCount = inThreadListCount;
+					DWORD* const threadIdListEnd = threadIdList + inThreadListCount;
 					for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
 					{
 						const win_internal::SYSTEM_THREAD_INFORMATION& threadInfo = procInfo.Threads[threadIndex];
@@ -1408,12 +1438,13 @@ namespace
 
 						if (threadHandle)
 						{
-							if (!std::binary_search(threadList, threadListEnd, threadHandle))
+							if (!std::binary_search(threadIdList, threadIdListEnd, threadId))
 							{
-								assert(outThreadIndex < maxThreadCount);
+								assert(outThreadCount < maxThreadCount);
 
-								threadList[outThreadIndex] = threadHandle;
-								++outThreadIndex;
+								threadList[outThreadCount] = threadHandle;
+								threadIdList[outThreadCount] = threadId;
+								++outThreadCount;
 							}
 							else
 							{
@@ -1422,7 +1453,25 @@ namespace
 						}
 					}
 
-					*inoutThreadCount = outThreadIndex;
+					// Keep the threadList and threadIdList sorted
+					unsigned* const sortedPerm = (unsigned*)valloca(outThreadCount * sizeof(unsigned));
+					const auto PermThreadIdLess = [&](unsigned a, unsigned b)
+					{
+						return threadIdList[a] < threadIdList[b];
+					};
+
+					// The initial lists were already sorted, so only sort the new entries, then perform an inplace_merge
+					std::iota(sortedPerm, sortedPerm + outThreadCount, 0);
+					std::sort(sortedPerm + inThreadListCount, sortedPerm + outThreadCount, PermThreadIdLess);
+					std::inplace_merge(sortedPerm, sortedPerm + inThreadListCount, sortedPerm + outThreadCount, PermThreadIdLess);
+
+					// Apply the final permutation across all threads
+					list::apply_permutation(sortedPerm, threadList, outThreadCount);
+					list::apply_permutation<false>(sortedPerm, threadIdList, outThreadCount);
+
+					vfreea(sortedPerm);
+
+					*inoutThreadCount = outThreadCount;
 					return true;
 				}
 
@@ -1433,12 +1482,13 @@ namespace
 		struct RAIISingleThreadBlock
 		{
 			const DWORD procId;
-			const HANDLE thisThread;
+			const DWORD thisThreadId;
 			HANDLE* threadList;
+			DWORD* threadIdList;
 			unsigned threadCount;
 			unsigned maxThreadCount;
 
-			explicit RAIISingleThreadBlock(bool pauseOnInit) : procId(GetCurrentProcessId()), thisThread(GetCurrentThread()), threadList(nullptr), threadCount(0), maxThreadCount(0)
+			explicit RAIISingleThreadBlock(bool pauseOnInit) : procId(GetCurrentProcessId()), thisThreadId(GetCurrentThreadId()), threadList(nullptr), threadCount(0), maxThreadCount(0)
 			{
 				if (pauseOnInit)
 					PauseAnyNewThreads();
@@ -1452,7 +1502,7 @@ namespace
 			{
 				for (unsigned threadIndex = 0; threadIndex < threadCount; ++threadIndex)
 				{
-					if (threadList[threadIndex] != thisThread)
+					if (threadIdList[threadIndex] != thisThreadId)
 						ResumeThread(threadList[threadIndex]);
 
 					CloseHandle(threadList[threadIndex]);
@@ -1474,17 +1524,14 @@ namespace
 
 					if (single_thread::ProcInfoSnapshot(&procInfoMem, &procInfoMemLen))
 					{
-						if (single_thread::GatherProcessThreads(procId, procInfoMem, &threadList, &maxThreadCount, &threadCount))
+						if (single_thread::GatherProcessThreads(procId, procInfoMem, &threadList, &threadIdList, &maxThreadCount, &threadCount))
 						{
 							// Suspend newly gathered threads;
 							for (unsigned threadIndex = oldThreadCount; threadIndex < threadCount; ++threadIndex)
 							{
-								if (threadList[threadIndex] != thisThread)
+								if (threadIdList[threadIndex] != thisThreadId)
 									SuspendThread(threadList[threadIndex]);
 							}
-
-							// Gather process threads requires a sorted list for a binary search, so do that now.
-							std::sort(threadList, threadList + threadCount);
 						}
 					}
 				} while (oldThreadCount != threadCount);
@@ -1928,7 +1975,7 @@ extern "C"
 
 			if (hook && hook->isInstalled && hook->stub)
 			{
-				outPtrs[hookIndex] = reinterpret_cast<Hook_FuncPtr>(hook->stub);
+				outPtrs[hookIndex] = reinterpret_cast<Hook_FuncPtr>(&hook->stub->funcHeader);
 				++trampolineCount;
 			}
 			else
