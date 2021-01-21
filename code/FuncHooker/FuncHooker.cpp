@@ -380,18 +380,22 @@ namespace
 				const size_t length = curAlloc->pageEnd - curAlloc->start;
 				DWORD oldProtect;
 
-				bool success = VirtualProtect(memStart, length, PAGE_READWRITE, &oldProtect);
+				bool success = VirtualProtect(memStart, length, PAGE_EXECUTE_READWRITE, &oldProtect);
 				assert(success && "Mem unprotection failed.");
 			}
 
 			static void ProtectStubAllocator(const Allocator* curAlloc)
 			{
+				const HANDLE thisProcess = GetCurrentProcess();
 				void* const memStart = reinterpret_cast<void*>(curAlloc->start);
 				const size_t length = curAlloc->pageEnd - curAlloc->start;
 				DWORD oldProtect;
 
 				bool success = VirtualProtect(memStart, length, PAGE_EXECUTE_READ, &oldProtect);
 				assert(success && "Mem protection failed.");
+
+				success = FlushInstructionCache(thisProcess, reinterpret_cast<const void*>(curAlloc->start), curAlloc->end - curAlloc->start);
+				assert(success && "Flushing instruction cache failed.");
 			}
 		}
 
@@ -1189,16 +1193,22 @@ namespace
 			{
 				for (unsigned pageIndex = 0; pageIndex < count; ++pageIndex)
 				{
-					VirtualProtect(const_cast<LPVOID>(pages[pageIndex]), 4096, PAGE_EXECUTE_READWRITE, &oldPrivs[pageIndex]);
+					bool success = VirtualProtect(const_cast<LPVOID>(pages[pageIndex]), 4096, PAGE_EXECUTE_READWRITE, &oldPrivs[pageIndex]);
+					assert(success && "VirtualProtect failed");
 				}
 			}
 
 			~RAIIReadWriteBlock()
 			{
+				const HANDLE thisProcess = GetCurrentProcess();
 				DWORD curPrivelege;
 				for (unsigned pageIndex = 0; pageIndex < count; ++pageIndex)
 				{
-					VirtualProtect(const_cast<LPVOID>(pages[pageIndex]), 4096, oldPrivs[pageIndex], &curPrivelege);
+					bool success = VirtualProtect(const_cast<LPVOID>(pages[pageIndex]), 4096, oldPrivs[pageIndex], &curPrivelege);
+					assert(success && "VirtualProtect failed");
+
+					success = FlushInstructionCache(thisProcess, pages[pageIndex], 4096);
+					assert(success && "FlushInstructionCache failed");
 				}
 			}
 
@@ -1383,7 +1393,8 @@ namespace
 				return false;
 			}
 
-			static bool GatherProcessThreads(const DWORD procId, const void* procInfoSnapshotMem, HANDLE** inoutThreadList, DWORD **inoutThreadIdList, unsigned* inoutMaxThreadCount, unsigned* inoutThreadCount)
+			template<typename NewThreadCB>
+			static bool GatherProcessThreads(const DWORD procId, const void* procInfoSnapshotMem, HANDLE** inoutThreadList, DWORD **inoutThreadIdList, unsigned* inoutMaxThreadCount, unsigned* inoutThreadCount, const NewThreadCB &HandleNewThread)
 			{
 				const win_internal::SYSTEM_PROCESS_INFORMATION* procInfoSnapshot = reinterpret_cast<const win_internal::SYSTEM_PROCESS_INFORMATION*>(procInfoSnapshotMem);
 				const HANDLE procIdHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(procId));
@@ -1441,6 +1452,8 @@ namespace
 							if (!std::binary_search(threadIdList, threadIdListEnd, threadId))
 							{
 								assert(outThreadCount < maxThreadCount);
+
+								HandleNewThread(threadHandle, threadId);
 
 								threadList[outThreadCount] = threadHandle;
 								threadIdList[outThreadCount] = threadId;
@@ -1524,15 +1537,13 @@ namespace
 
 					if (single_thread::ProcInfoSnapshot(&procInfoMem, &procInfoMemLen))
 					{
-						if (single_thread::GatherProcessThreads(procId, procInfoMem, &threadList, &threadIdList, &maxThreadCount, &threadCount))
+						auto PauseNewThreads = [&](HANDLE threadHandle, DWORD threadId)
 						{
-							// Suspend newly gathered threads;
-							for (unsigned threadIndex = oldThreadCount; threadIndex < threadCount; ++threadIndex)
-							{
-								if (threadIdList[threadIndex] != thisThreadId)
-									SuspendThread(threadList[threadIndex]);
-							}
-						}
+							if (threadId != thisThreadId)
+								SuspendThread(threadHandle);
+						};
+
+						single_thread::GatherProcessThreads(procId, procInfoMem, &threadList, &threadIdList, &maxThreadCount, &threadCount, PauseNewThreads);
 					}
 				} while (oldThreadCount != threadCount);
 
