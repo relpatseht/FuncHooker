@@ -50,7 +50,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ZydisIncludePath);$(ZycoreIncludePath);$(ZydisFolder)src\</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;ZYDIS_DISABLE_FORMATTER;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;ZYAN_NO_LIBC;ZYDIS_DISABLE_FORMATTER;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -65,7 +65,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ZydisIncludePath);$(ZycoreIncludePath);$(ZydisFolder)src\</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;ZYDIS_DISABLE_FORMATTER;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;ZYAN_NO_LIBC;ZYDIS_DISABLE_FORMATTER;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -74,59 +74,43 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="$(ZydisFolder)src\FormatterATT.c" />
-    <ClCompile Include="$(ZydisFolder)src\FormatterBase.c" />
-    <ClCompile Include="$(ZydisFolder)src\FormatterBuffer.c" />
-    <ClCompile Include="$(ZydisFolder)src\FormatterIntel.c" />
-    <ClCompile Include="$(ZydisFolder)src\MetaInfo.c" />
-    <ClCompile Include="$(ZydisFolder)src\Mnemonic.c" />
-    <ClCompile Include="$(ZydisFolder)src\Register.c" />
-    <ClCompile Include="$(ZydisFolder)src\SharedData.c" />
-    <ClCompile Include="$(ZydisFolder)src\String.c" />
-    <ClCompile Include="$(ZydisFolder)src\Utils.c" />
-    <ClCompile Include="$(ZydisFolder)src\Zydis.c" />
     <ClCompile Include="$(ZydisFolder)src\Decoder.c" />
-    <ClCompile Include="$(ZydisFolder)src\DecoderData.c" />
-    <ClCompile Include="$(ZydisFolder)src\Formatter.c" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Allocator.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Bitset.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Comparison.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Defines.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Format.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\LibC.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Object.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Status.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\String.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Terminal.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Types.h" />
-    <ClInclude Include="$(ZydisFolder)dependencies\zycore\include\Zycore\Vector.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Decoder.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\DecoderTypes.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Formatter.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\MetaInfo.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Mnemonic.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Register.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\SharedTypes.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\ShortString.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Status.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Utils.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Zydis.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\SharedData.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\DecoderData.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\FormatterATT.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\FormatterBase.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\FormatterIntel.h" />
-    <ClInclude Include="$(ZydisFolder)include\Zydis\Internal\String.h" />
+    <ClCompile Include="3.1.0\src\DecoderData.c" />
+    <ClCompile Include="3.1.0\src\Register.c" />
+    <ClCompile Include="3.1.0\src\SharedData.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="$(ZydisFolder)resources\VersionInfo.rc" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="zycore.vcxproj">
-      <Project>{e06e2e87-82b9-4dc2-a1e9-fe371cdbaac2}</Project>
-    </ProjectReference>
+    <ClInclude Include="3.1.0\include\Zydis\Decoder.h" />
+    <ClInclude Include="3.1.0\include\Zydis\DecoderTypes.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumInstructionCategory.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumISAExt.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumISASet.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumMnemonic.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumRegister.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Internal\DecoderData.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Internal\SharedData.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Register.h" />
+    <ClInclude Include="3.1.0\include\Zydis\SharedTypes.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Status.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Utils.h" />
+    <ClInclude Include="3.1.0\include\Zydis\Zydis.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="3.1.0\src\Generated\AccessedFlags.inc" />
+    <None Include="3.1.0\src\Generated\DecoderTables.inc" />
+    <None Include="3.1.0\src\Generated\EncodableInstructions.inc" />
+    <None Include="3.1.0\src\Generated\EnumInstructionCategory.inc" />
+    <None Include="3.1.0\src\Generated\EnumISAExt.inc" />
+    <None Include="3.1.0\src\Generated\EnumISASet.inc" />
+    <None Include="3.1.0\src\Generated\EnumMnemonic.inc" />
+    <None Include="3.1.0\src\Generated\EnumRegister.inc" />
+    <None Include="3.1.0\src\Generated\FormatterStrings.inc" />
+    <None Include="3.1.0\src\Generated\InstructionDefinitions.inc" />
+    <None Include="3.1.0\src\Generated\InstructionEncodings.inc" />
+    <None Include="3.1.0\src\Generated\OperandDefinitions.inc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

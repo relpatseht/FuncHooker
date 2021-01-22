@@ -11,6 +11,8 @@
 #include "ASMStubs.h"
 #include "FuncHooker.h"
 
+#define sanity(X) do{ if(!(X)) __debugbreak(); }while(false)
+
 namespace
 {
 	template<size_t PtrSize>
@@ -23,7 +25,7 @@ namespace
 		ASM::X64::LJmp executeInjector;
 
 		InjectionStubImpl(const Hook_FuncPtr InjectionPtr) :
-			executeInjector(InjectionPtr)			  // This is only ever used if we needed a long proxy
+			executeInjector(reinterpret_cast<const void*>(InjectionPtr))			  // This is only ever used if we needed a long proxy
 		{
 			static constexpr uint8_t int3 = 0xCC;
 			std::memset(funcHeader, int3, sizeof(funcHeader));
@@ -31,7 +33,7 @@ namespace
 
 		void SetInjectee(void *writeAddr, const void *funcMem, unsigned offset)
 		{
-			assert(writeAddr > funcHeader && writeAddr < (funcHeader + (sizeof(funcHeader) - sizeof(ASM::X64::LJmp))));
+			sanity(writeAddr > funcHeader && writeAddr < (funcHeader + (sizeof(funcHeader) - sizeof(ASM::X64::LJmp))));
 
 			new (writeAddr) ASM::X64::LJmp{ reinterpret_cast<const uint8_t*>(funcMem) + offset };
 		}
@@ -52,7 +54,7 @@ namespace
 
 		void SetInjectee(void* writeAddr, const void* funcMem, unsigned offset)
 		{
-			assert(writeAddr > funcHeader && writeAddr < (funcHeader + (sizeof(funcHeader) - sizeof(ASM::X86::Jmp))));
+			sanity(writeAddr > funcHeader && writeAddr < (funcHeader + (sizeof(funcHeader) - sizeof(ASM::X86::Jmp))));
 
 			new (writeAddr) ASM::X86::Jmp(writeAddr, reinterpret_cast<const uint8_t*>(funcMem) + offset);
 		}
@@ -206,7 +208,7 @@ namespace
 				{
 					void* const curPage = VirtualAlloc(allocAddr, ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
 
-					assert(curPage == allocAddr);
+					sanity(curPage == allocAddr);
 
 					return InitAllocator(curPage);
 				}
@@ -248,8 +250,8 @@ namespace
 				{
 					void* const curPage = VirtualAlloc(allocAddr, ALLOC_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE);
 
-					assert(curPage == allocAddr);
-					assert(allocAddr >= lowAddr && allocAddr <= highAddr);
+					sanity(curPage == allocAddr);
+					sanity(allocAddr >= lowAddr && allocAddr <= highAddr);
 
 					return InitAllocator(curPage);
 				}
@@ -262,7 +264,7 @@ namespace
 				const size_t requestedMemory = entrySize * entryCount;
 				size_t pageRemaining = alloc->pageEnd - alloc->pageCur;
 
-				assert(alloc->pageEnd >= alloc->pageCur);
+				sanity(alloc->pageEnd >= alloc->pageCur);
 
 				if (pageRemaining < requestedMemory && alloc->pageEnd < alloc->end)
 				{
@@ -276,7 +278,7 @@ namespace
 					{
 						pageRemaining += allocSize;
 						alloc->pageEnd += allocSize;
-						assert(alloc->pageEnd <= alloc->end);
+						sanity(alloc->pageEnd <= alloc->end);
 					}
 				}
 
@@ -381,7 +383,7 @@ namespace
 				DWORD oldProtect;
 
 				bool success = VirtualProtect(memStart, length, PAGE_EXECUTE_READWRITE, &oldProtect);
-				assert(success && "Mem unprotection failed.");
+				sanity(success && "Mem unprotection failed.");
 			}
 
 			static void ProtectStubAllocator(const Allocator* curAlloc)
@@ -392,10 +394,10 @@ namespace
 				DWORD oldProtect;
 
 				bool success = VirtualProtect(memStart, length, PAGE_EXECUTE_READ, &oldProtect);
-				assert(success && "Mem protection failed.");
+				sanity(success && "Mem protection failed.");
 
 				success = FlushInstructionCache(thisProcess, reinterpret_cast<const void*>(curAlloc->start), curAlloc->end - curAlloc->start);
-				assert(success && "Flushing instruction cache failed.");
+				sanity(success && "Flushing instruction cache failed.");
 			}
 		}
 
@@ -421,7 +423,7 @@ namespace
 								break;
 						}
 
-						assert(curAlloc && "List item not from any allocator");
+						sanity(curAlloc && "List item not from any allocator");
 
 						do
 						{
@@ -484,7 +486,7 @@ namespace
 							InjectionStub* const newStub = tempStubs[tempIndex];
 							const unsigned stubIndex = allocIndices[tempIndex];
 
-							assert(outStubs[stubIndex] == nullptr);
+							sanity(outStubs[stubIndex] == nullptr);
 							outStubs[stubIndex] = newStub;
 						}
 
@@ -508,8 +510,8 @@ namespace
 							const unsigned validCount = alloc::GatherStubIndicesWithin2GBOfAllocator(curAlloc, outStubs, hintAddrs, count, allocIndices);
 							const unsigned allocedStubs = alloc::Allocate<InjectionStub>(curAlloc, tempStubs, validCount);
 
-							assert(validCount > 0 && "Allocator designed for stub did not apply to it");
-							assert(allocedStubs > 0 && "New allocate couldn't be allocated from");
+							sanity(validCount > 0 && "Allocator designed for stub did not apply to it");
+							sanity(allocedStubs > 0 && "New allocate couldn't be allocated from");
 
 							curAlloc->next = stubAllocHead;
 							*stubAllocHeadPtr = curAlloc;
@@ -519,7 +521,7 @@ namespace
 								InjectionStub* const newStub = tempStubs[tempIndex];
 								const unsigned realStubIndex = allocIndices[tempIndex];
 
-								assert(outStubs[realStubIndex] == nullptr);
+								sanity(outStubs[realStubIndex] == nullptr);
 								outStubs[realStubIndex] = newStub;
 							}
 
@@ -551,7 +553,7 @@ namespace
 				}
 			}
 
-			assert(allocated <= count);
+			sanity(allocated <= count);
 
 			vfreea(tempStubs);
 			vfreea(allocIndices);
@@ -580,7 +582,7 @@ namespace
 							break;
 					}
 
-					assert(curAlloc && "List item not from any allocator");
+					sanity(curAlloc && "List item not from any allocator");
 
 					do
 					{
@@ -769,15 +771,15 @@ namespace
 
 							if (offsetTarget >= baseFromAddr && offsetTarget < baseFromEndAddr) // Move a relative instruction targeting our move area
 							{
-								// We only care about relative calls here, which mean we need they
+								// We only care about relative calls here, which mean they
 								// are storing an instruction pointer which we will need to alter.
 								if (inst.mnemonic == ZYDIS_MNEMONIC_CALL)
 								{
 									if (offset < 0)
-										return false; // Negative rleative calls within the target aren't supported
+										return false; // Negative relative calls within the target aren't supported
 									else
 									{
-										assert(inst.length == 5);
+										sanity(inst.length == 5);
 
 										// The call to 0 or just jumping a nop. Change it to a push and be done with it.
 										new (curToAddr) ASM::X86::PushU32(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(curFromAddr)) + 5); // 5 is the size of the relative call
@@ -974,7 +976,7 @@ namespace
 			{
 				ZydisDecodedInstruction* const curInstruction = (*outInstructions) + headerInstructions;
 
-				assert(headerInstructions <= MAX_INSTRUCTIONS);
+				sanity(headerInstructions <= MAX_INSTRUCTIONS);
 
 				if (!DecodeInstruction(disasm, curHeaderAddr, curInstruction))
 					return 0;
@@ -1011,8 +1013,8 @@ namespace
 				moveSize += instSize;
 			}
 
-			assert(moveSize < 256 && "Move size won't fit in u8");
-			assert(moveSize >= minMoveSize);
+			sanity(moveSize < 256 && "Move size won't fit in u8");
+			sanity(moveSize >= minMoveSize);
 
 			inoutHook->overwriteSize = static_cast<uint8_t>(moveSize);
 
@@ -1078,7 +1080,7 @@ namespace
 
 				outHook->proxyBackupSize = 0;
 				minOverwriteSize = sizeof(ASM::X86::Jmp);
-				outHook->injectionJumpTarget = InjectionFunc;
+				outHook->injectionJumpTarget = reinterpret_cast<const void*>(InjectionFunc);
 
 				if constexpr (sizeof(void*) == 8)
 				{
@@ -1097,7 +1099,7 @@ namespace
 			// Get the actual overwrite size by counting the number of instructions our jump will displace
 			void* proxyEnd = nullptr;
 			const unsigned movedInstructions = RelocateHeader(disasm, minOverwriteSize, outHook, &proxyEnd);
-			assert(outHook->overwriteSize <= sizeof(outHook->headerOverwrite));
+			sanity(outHook->overwriteSize <= sizeof(outHook->headerOverwrite));
 
 			// RelocateHeader returns 0 on failure
 			if (outHook->overwriteSize)
@@ -1132,7 +1134,7 @@ namespace
 					new (outHook->headerOverwrite) ASM::X86::SJmp(funcBody, outHook->injectionJumpTarget);
 					break;
 				default:
-					assert(0 && "Unknown hook overwrite size");
+					sanity(0 && "Unknown hook overwrite size");
 				}
 
 
@@ -1178,7 +1180,7 @@ namespace
 			std::sort(outPages, outPages + validCount);
 			const void** newEnd = std::unique(outPages, outPages + validCount);
 
-			assert(newEnd - outPages <= validCount && newEnd >= outPages);
+			sanity(newEnd - outPages <= validCount && newEnd >= outPages);
 			return static_cast<unsigned>(newEnd - outPages);
 		}
 
@@ -1193,7 +1195,7 @@ namespace
 				for (unsigned pageIndex = 0; pageIndex < count; ++pageIndex)
 				{
 					bool success = VirtualProtect(const_cast<LPVOID>(pages[pageIndex]), 4096, PAGE_EXECUTE_READWRITE, &oldPrivs[pageIndex]);
-					assert(success && "VirtualProtect failed");
+					sanity(success && "VirtualProtect failed");
 				}
 			}
 
@@ -1204,10 +1206,10 @@ namespace
 				for (unsigned pageIndex = 0; pageIndex < count; ++pageIndex)
 				{
 					bool success = VirtualProtect(const_cast<LPVOID>(pages[pageIndex]), 4096, oldPrivs[pageIndex], &curPrivelege);
-					assert(success && "VirtualProtect failed");
+					sanity(success && "VirtualProtect failed");
 
 					success = FlushInstructionCache(thisProcess, pages[pageIndex], 4096);
-					assert(success && "FlushInstructionCache failed");
+					sanity(success && "FlushInstructionCache failed");
 				}
 			}
 
@@ -1444,13 +1446,13 @@ namespace
 						const DWORD threadId = static_cast<DWORD>(reinterpret_cast<uintptr_t>(threadInfo.ClientId.UniqueThread));
 						const HANDLE threadHandle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, false, threadId);
 
-						assert(threadInfo.ClientId.UniqueProcess == procIdHandle);
+						sanity(threadInfo.ClientId.UniqueProcess == procIdHandle);
 
 						if (threadHandle)
 						{
 							if (!std::binary_search(threadIdList, threadIdListEnd, threadId))
 							{
-								assert(outThreadCount < maxThreadCount);
+								sanity(outThreadCount < maxThreadCount);
 
 								HandleNewThread(threadHandle, threadId);
 
@@ -1762,7 +1764,7 @@ extern "C"
 		{
 			FuncHooker* const ctx = (FuncHooker*)memCur;
 
-			assert(memCur == ctxMemStart && "Virtual alloc commit off reserve.");
+			sanity(memCur == ctxMemStart && "Virtual alloc commit off reserve.");
 
 			// Since we're offseting the mem for allocator init, we need to 
 			// pull the page end and end back to page aligned
@@ -1770,8 +1772,8 @@ extern "C"
 			ctx->hookAlloc->pageEnd -= sizeof(FuncHooker);
 			ctx->hookAlloc->end -= sizeof(FuncHooker);
 
-			assert((ctx->hookAlloc->pageEnd & ~(mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->pageEnd);
-			assert((ctx->hookAlloc->end & ~(mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->end);
+			sanity((ctx->hookAlloc->pageEnd & ~(mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->pageEnd);
+			sanity((ctx->hookAlloc->end & ~(mem::ALLOC_PAGE_SIZE - 1)) == ctx->hookAlloc->end);
 
 			ctx->stubAlloc = nullptr;
 
@@ -1934,7 +1936,7 @@ extern "C"
 						case U32: modify::InstallHookAtomicly<uint32_t>(hook->funcBody, hook->headerOverwrite); break;
 						case U64: modify::InstallHookAtomicly<uint64_t>(hook->funcBody, hook->headerOverwrite); break;
 						default:
-							assert(0 && "Unknown overwrite size for hotpatchable hook");
+							sanity(0 && "Unknown overwrite size for hotpatchable hook");
 						}
 					}
 					else
