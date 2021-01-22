@@ -1709,6 +1709,47 @@ namespace
 			}
 		}
 	}
+
+	static unsigned UninstallMany_Internal(struct FuncHook** funcHooks, unsigned count)
+	{
+		const void** const privAddrs = (const void**)valloca(sizeof(void**) * count);
+		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, false, privAddrs);
+		DWORD* const oldPrivileges = (DWORD*)valloca(sizeof(DWORD) * privAddrCount);
+
+		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, privAddrCount);
+
+		// Note: Proxies make this not work. Need to flush IPs out of dangerous zone instead!
+		//modify::RelocateMovedIPs(raiiSingleThreaded.threadList, raiiSingleThreaded.threadCount, funcHooks, count);
+
+		unsigned removedHooks = 0;
+		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
+		{
+			FuncHook* const hook = funcHooks[hookIndex];
+
+			if (hook->isInstalled)
+			{
+				try
+				{
+					std::memcpy(hook->funcBody, hook->headderBackup, hook->overwriteSize);
+
+					// If using a proxy jump, restore the data for cleanliness
+					if (hook->proxyBackupSize)
+					{
+						void* const proxyAddr = const_cast<void*>(hook->injectionJumpTarget);
+						std::memcpy(proxyAddr, hook->proxyBackup, hook->proxyBackupSize);
+					}
+
+					hook->isInstalled = false;
+					++removedHooks;
+				}
+				catch (...)
+				{
+				}
+			}
+		}
+
+		return removedHooks;
+	}
 }
 
 extern "C"
@@ -1921,10 +1962,6 @@ extern "C"
 
 	unsigned Hook_UninstallMany(struct FuncHook** funcHooks, unsigned count)
 	{
-		const void** const privAddrs = (const void**)valloca(sizeof(void**) * count);
-		const unsigned privAddrCount = modify::GatherPrivilegePages(funcHooks, count, false, privAddrs);
-		DWORD* const oldPrivileges = (DWORD*)valloca(sizeof(DWORD) * privAddrCount);
-
 		// We need to make every function page read/writeable, then make sure none of the
 		// functions are executing while we install the hooks. It's best to do that ASAP,
 		// so make our thread time critical while we do it.
@@ -1933,39 +1970,8 @@ extern "C"
 		// writes can't be done atomically.
 		modify::RAIITimeCriticalBlock raiiTimeCritical;
 		modify::RAIISingleThreadBlock raiiSingleThreaded;
-		modify::RAIIReadWriteBlock raiiReadWrite(privAddrs, oldPrivileges, privAddrCount);
 
-		// Note: Proxies make this not work. Need to flush IPs out of dangerous zone instead!
-		//modify::RelocateMovedIPs(raiiSingleThreaded.threadList, raiiSingleThreaded.threadCount, funcHooks, count);
-
-		unsigned removedHooks = 0;
-		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
-		{
-			FuncHook* const hook = funcHooks[hookIndex];
-
-			if (hook->isInstalled)
-			{
-				try
-				{
-					std::memcpy(hook->funcBody, hook->headderBackup, hook->overwriteSize);
-
-					// If using a proxy jump, restore the data for cleanliness
-					if (hook->proxyBackupSize)
-					{
-						void* const proxyAddr = const_cast<void*>(hook->injectionJumpTarget);
-						std::memcpy(proxyAddr, hook->proxyBackup, hook->proxyBackupSize);
-					}
-
-					hook->isInstalled = false;
-					++removedHooks;
-				}
-				catch (...)
-				{
-				}
-			}
-		}
-
-		return removedHooks;
+		return UninstallMany_Internal(funcHooks, count);
 	}
 
 	const Hook_FuncPtr Hook_GetTrampoline(const struct FuncHook* funcHook)
@@ -2010,6 +2016,12 @@ extern "C"
 		unsigned stubCount = 0;
 		unsigned proxyTargetCount = 0;
 
+		// We need to make every function page read/writeable, then make sure none of the
+		// functions are executing while we install the hooks. It's best to do that ASAP,
+		// so make our thread time critical while we do it.
+		modify::RAIITimeCriticalBlock raiiTimeCritical;
+		modify::RAIISingleThreadBlock raiiSingleThreaded;
+
 		// If any of the hooks are still installed, be sure to uninstall them
 		for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
 		{
@@ -2017,7 +2029,7 @@ extern "C"
 
 			if (hook && hook->isInstalled)
 			{
-				Hook_UninstallMany(funcHooks, count);
+				UninstallMany_Internal(funcHooks, count);
 				break;
 			}
 		}
@@ -2052,11 +2064,6 @@ extern "C"
 		DWORD* const oldPrivs = (DWORD*)valloca(sizeof(DWORD) * proxyTargetCount);
 
 		{
-			// We need to make every function page read/writeable, then make sure none of the
-			// functions are executing while we install the hooks. It's best to do that ASAP,
-			// so make our thread time critical while we do it.
-			modify::RAIITimeCriticalBlock raiiTimeCritical;
-			modify::RAIISingleThreadBlock raiiSingleThreaded;
 			modify::RAIIReadWriteBlock raiiReadWrite(reinterpret_cast<const void**>(proxyTargets), oldPrivs, proxyTargetCount);
 
 			for (unsigned hookIndex = 0; hookIndex < count; ++hookIndex)
