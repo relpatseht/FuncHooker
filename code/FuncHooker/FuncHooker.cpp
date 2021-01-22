@@ -707,7 +707,7 @@ namespace
 
 		// Lets get tricky. We want to overwrite as few bytes of the function as possible.
 		// Unfortunately, a long jump is 5 bytes on x86 and on x64 could be 14 in the worst
-		// case scenario. Solution: often in memory functions will be preceded by NOPs, INT 3's
+		// case scenario. Solution: often in memory functions will be preceded by INT 3's
 		// (breakpoints), and other instructions which don't actually alter things in any way
 		// (which makes sense, because the instruction pointer should never get there). for 
 		// padding purposes. A short jump is only 2 bytes long. So, let's count the number of free 
@@ -717,15 +717,14 @@ namespace
 		{
 			// Unfortunately, disassemblers can't work in reverse, we'll have to simply look at bytes
 			// one at a time and determine if they are a type of uint8_t we can view as a nop. Fortunately
-			// all these NOP instruction types are only 1 uint8_t long.
-			static constexpr uint8_t nop = ASM::X86::NOP{}.nopOpcode;
+			// all these instruction types are only 1 uint8_t long.
 			static constexpr uint8_t int3 = 0xCC;
 
 			const uintptr_t startAddr = reinterpret_cast<uintptr_t>(start);
 			const uint8_t* const pageStart = reinterpret_cast<uint8_t*>(startAddr & ~0xFFF); // Going over a page boundary could trigger a page fault. For safety...
 			const uint8_t* prefixStart = start - 1;
 
-			while (prefixStart >= pageStart && start - prefixStart <= minSize && (*prefixStart == nop || *prefixStart == int3))
+			while (prefixStart >= pageStart && start - prefixStart <= minSize && *prefixStart == int3)
 				--prefixStart;
 
 			const unsigned prefixBytes = static_cast<unsigned>((start - prefixStart) - 1);
