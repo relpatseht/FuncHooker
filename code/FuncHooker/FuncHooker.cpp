@@ -946,10 +946,10 @@ namespace
 						}
 						break;
 					case ZYDIS_OPERAND_TYPE_MEMORY: // Register + offset ptr (eg: [RIP+0x2])
-						if (op.mem.base == ZYDIS_REGISTER_RIP || op.mem.index == ZYDIS_REGISTER_RIP) // Handle RIP relative addressing.
+						if (op.mem.base == ZYDIS_REGISTER_RIP || op.mem.index == ZYDIS_REGISTER_RIP || op.mem.base == ZYDIS_REGISTER_EIP || op.mem.index == ZYDIS_REGISTER_EIP) // Handle RIP relative addressing.
 						{
 							const int32_t offset = static_cast<int32_t>(op.mem.disp.value);
-							const int32_t scale = (op.mem.index == ZYDIS_REGISTER_RIP) ? (1 << op.mem.scale) : 1;
+							const int32_t scale = (op.mem.index == ZYDIS_REGISTER_RIP || op.mem.index == ZYDIS_REGISTER_EIP) ? (1 << op.mem.scale) : 1;
 							const intptr_t target = reinterpret_cast<intptr_t>(curFromAddr) * scale + offset;
 							const intptr_t newOffset = target - reinterpret_cast<intptr_t>(curToAddr);
 
