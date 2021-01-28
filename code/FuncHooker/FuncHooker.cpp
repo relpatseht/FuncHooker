@@ -2029,7 +2029,7 @@ extern "C"
 		{
 			const FuncHook* const hook = funcHooks[hookIndex];
 
-			if (hook && hook->isInstalled && hook->stub)
+			if (hook && hook->stub)
 			{
 				outPtrs[hookIndex] = reinterpret_cast<Hook_FuncPtr>(&hook->stub->funcHeader);
 				++trampolineCount;
