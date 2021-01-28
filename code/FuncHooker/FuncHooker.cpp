@@ -725,7 +725,7 @@ namespace
 						absAddr = (static_cast<uint64_t>(op.ptr.segment) << 4) + op.ptr.offset;
 						break;
 					case ZYDIS_OPERAND_TYPE_IMMEDIATE:
-						absAddr = reinterpret_cast<intptr_t>(bodyPtr) + inst.length + op.imm.value.s;
+						absAddr = static_cast<uintptr_t>(reinterpret_cast<intptr_t>(bodyPtr) + inst.length + op.imm.value.s);
 						break;
 					default:
 						goto body_found;
@@ -764,7 +764,7 @@ namespace
 			const uint8_t* const pageStart = reinterpret_cast<uint8_t*>(startAddr & ~0xFFF); // Going over a page boundary could trigger a page fault. For safety...
 			const uint8_t* prefixStart = start - 1;
 
-			while (prefixStart >= pageStart && start - prefixStart <= minSize && *prefixStart == int3)
+			while (prefixStart >= pageStart && static_cast<unsigned>(start - prefixStart) <= minSize && *prefixStart == int3)
 				--prefixStart;
 
 			const unsigned prefixBytes = static_cast<unsigned>((start - prefixStart) - 1);
@@ -801,7 +801,7 @@ namespace
 					case ZYDIS_OPERAND_TYPE_IMMEDIATE:
 						if (op.imm.is_relative) // Relative offset (loops, jumps, calls)
 						{
-							const intptr_t offset = op.imm.is_signed ? op.imm.value.s : (intptr_t)op.imm.value.u;
+							const intptr_t offset = op.imm.is_signed ? (intptr_t)op.imm.value.s : (intptr_t)op.imm.value.u;
 							const intptr_t movedOffset = RelocateOffset(offset, curFromAddr, curToAddr);
 							const int64_t farOffset64 = (1ll << 31) - 1;
 							const intptr_t farOffset = static_cast<intptr_t>(farOffset64);
@@ -887,7 +887,7 @@ namespace
 							}
 							else if (op.size == 8) // Move a short relative instruction far
 							{
-								const intptr_t oldOffset = op.imm.value.s;
+								const intptr_t oldOffset = (intptr_t)op.imm.value.s;
 								const intptr_t newOffset = oldOffset + (curToAddr - curFromAddr);
 
 								switch (inst.mnemonic)
@@ -933,7 +933,7 @@ namespace
 							}
 							else // Moving sone other relative instruction (no special handling)
 							{
-								const intptr_t oldOffset = op.imm.value.s;
+								const intptr_t oldOffset = (intptr_t)op.imm.value.s;
 								const intptr_t newOffset = oldOffset + (curToAddr - curFromAddr);
 
 								std::memcpy(curToAddr, curFromAddr, inst.length); // Copy over the operation
@@ -1120,18 +1120,18 @@ namespace
 				minOverwriteSize = sizeof(ASM::X86::Jmp);
 				outHook->injectionJumpTarget = reinterpret_cast<const void*>(InjectionFunc);
 
-				if constexpr (sizeof(void*) == 8)
-				{
+#if defined(_WIN64)
 					if (std::abs(injectDist) > (1u << 31) - 1)
 					{
 						// We only need 14 bytes if both our stub code (for a long proxy) and our
 						// InjectionFunctiton are over 2gb away
-						if (std::abs(injectDist) > (1u << 31) - 1)
-							outHook->overwriteSize = sizeof(ASM::X64::LJmp);
+						if (std::abs(stubDist) > (1u << 31) - 1)
+							minOverwriteSize = sizeof(ASM::X64::LJmp);
 						else
 							outHook->injectionJumpTarget = stubMem + offsetof(InjectionStub, executeInjector); // If our stub code is close, jump there instead.
 					}
 				}
+#endif //if defined(_WIN64)
 			}
 
 			// Get the actual overwrite size by counting the number of instructions our jump will displace
@@ -1218,7 +1218,7 @@ namespace
 			std::sort(outPages, outPages + validCount);
 			const void** newEnd = std::unique(outPages, outPages + validCount);
 
-			sanity(newEnd - outPages <= validCount && newEnd >= outPages);
+			sanity(static_cast<unsigned>(newEnd - outPages) <= validCount && newEnd >= outPages);
 			return static_cast<unsigned>(newEnd - outPages);
 		}
 
@@ -1593,7 +1593,7 @@ namespace
 		static __forceinline uintptr_t* ContextIP(CONTEXT* context)
 		{
 #ifdef _X86_
-			return &context->Eip;
+			return reinterpret_cast<uintptr_t*>(&context->Eip);
 #else //#ifdef _X86_
 			return &context->Rip;
 #endif //#else //#ifdef _X86_
