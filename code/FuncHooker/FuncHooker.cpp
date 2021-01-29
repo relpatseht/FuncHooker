@@ -1121,15 +1121,14 @@ namespace
 				outHook->injectionJumpTarget = reinterpret_cast<const void*>(InjectionFunc);
 
 #if defined(_WIN64)
-					if (std::abs(injectDist) > (1u << 31) - 1)
-					{
-						// We only need 14 bytes if both our stub code (for a long proxy) and our
-						// InjectionFunctiton are over 2gb away
-						if (std::abs(stubDist) > (1u << 31) - 1)
-							minOverwriteSize = sizeof(ASM::X64::LJmp);
-						else
-							outHook->injectionJumpTarget = stubMem + offsetof(InjectionStub, executeInjector); // If our stub code is close, jump there instead.
-					}
+				if (std::abs(injectDist) > (1u << 31) - 1)
+				{
+					// We only need 14 bytes if both our stub code (for a long proxy) and our
+					// InjectionFunctiton are over 2gb away
+					if (std::abs(stubDist) > (1u << 31) - 1)
+						minOverwriteSize = sizeof(ASM::X64::LJmp);
+					else
+						outHook->injectionJumpTarget = stubMem + offsetof(InjectionStub, executeInjector); // If our stub code is close, jump there instead.
 				}
 #endif //if defined(_WIN64)
 			}
