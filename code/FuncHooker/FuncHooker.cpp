@@ -1006,11 +1006,11 @@ namespace
 		template<size_t MAX_INSTRUCTIONS>
 		static unsigned GatherHeader(const ZydisDecoder& disasm, const uint8_t* headerAddr, unsigned minSize, ZydisDecodedInstruction (*outInstructions)[MAX_INSTRUCTIONS])
 		{
-			unsigned totalHeaderSize = 0;
 			unsigned headerInstructions = 0;
 			const uint8_t* curHeaderAddr = headerAddr;
+			const uint8_t* const headerAddrEnd = curHeaderAddr + minSize;
 
-			while (totalHeaderSize < minSize)
+			while (curHeaderAddr < headerAddrEnd)
 			{
 				ZydisDecodedInstruction* const curInstruction = (*outInstructions) + headerInstructions;
 
@@ -1020,7 +1020,7 @@ namespace
 					return 0;
 				else
 				{
-					totalHeaderSize += curInstruction->length;
+					curHeaderAddr += curInstruction->length;
 					++headerInstructions;
 
 				}
@@ -1287,7 +1287,7 @@ namespace
 		{
 			namespace win_internal
 			{
-				typedef __kernel_entry NTSTATUS(*QuerySysInfoPtr)(
+				typedef NTSYSAPI __kernel_entry NTSTATUS (NTAPI *QuerySysInfoPtr)(
 					IN SYSTEM_INFORMATION_CLASS SystemInformationClass,
 					OUT PVOID                   SystemInformation,
 					IN ULONG                    SystemInformationLength,
