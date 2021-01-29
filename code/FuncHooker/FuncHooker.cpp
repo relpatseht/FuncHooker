@@ -50,6 +50,7 @@
 #include "FuncHooker.h"
 
 #define sanity(X) do{ if(!(X)) __debugbreak(); }while(false)
+#define ARRAY_COUNT(X) (sizeof((X))/sizeof((X)[0]))
 
 namespace
 {
@@ -1141,19 +1142,31 @@ namespace
 			// RelocateHeader returns 0 on failure
 			if (outHook->overwriteSize)
 			{
-				static constexpr uint8_t nopOpcode = 0x90;
 				static constexpr uint8_t int3Opcode = 0xCC;
 				static constexpr size_t LONG_JUMP = sizeof(ASM::X64::LJmp);
 				static constexpr size_t JUMP = sizeof(ASM::X86::Jmp);
 				static constexpr size_t SHORT_JUMP = sizeof(ASM::X86::SJmp);
+				static const uint8_t* multiByteNOPTable[] = {
+					nullptr,
+					(const uint8_t*)"\x90",
+					(const uint8_t*)"\x66\x90",
+					(const uint8_t*)"\x0F\x1F\x00",
+					(const uint8_t*)"\x0F\x1F\x40\x00",
+					(const uint8_t*)"\x0F\x1F\x44\x00\x00",
+					(const uint8_t*)"\x66\x0F\x1F\x44\x00\x00",
+					(const uint8_t*)"\x0F\x1F\x80\x00\x00\x00\x00",
+					(const uint8_t*)"\x0F\x1F\x84\x00\x00\x00\x00\x00",
+					(const uint8_t*)"\x66\x0F\x1F\x84\x00\x00\x00\x00\x00"
+				};
+				uint8_t* const headerOverwriteEnd = outHook->headerOverwrite + outHook->overwriteSize;
+				uint8_t* headerOverwritePos = outHook->headerOverwrite;
 
 				// Copy over the header of the function that we'll be overwriting
 				std::memcpy(outHook->headderBackup, funcMem, outHook->overwriteSize);
-				std::memset(outHook->headerOverwrite, nopOpcode, outHook->overwriteSize);
 
 				// Just for safety, fill our buffers with int3 (break)
 				std::memset(outHook->headderBackup + outHook->overwriteSize, int3Opcode, sizeof(outHook->headderBackup) - outHook->overwriteSize);
-				std::memset(outHook->headerOverwrite + outHook->overwriteSize, int3Opcode, sizeof(outHook->headerOverwrite) - outHook->overwriteSize);
+				std::memset(headerOverwriteEnd, int3Opcode, sizeof(outHook->headerOverwrite) - outHook->overwriteSize);
 
 				// Write in out jump to the injectee function write after the header
 				outHook->stub->SetInjectee(proxyEnd, funcMem, outHook->overwriteSize);
@@ -1162,18 +1175,33 @@ namespace
 				switch (minOverwriteSize)
 				{
 				case LONG_JUMP:
-					new (outHook->headerOverwrite) ASM::X64::LJmp(outHook->injectionJumpTarget);
+					new (headerOverwritePos) ASM::X64::LJmp(outHook->injectionJumpTarget);
 					break;
 				case JUMP:
-					new (outHook->headerOverwrite) ASM::X86::Jmp(funcBody, outHook->injectionJumpTarget);
+					new (headerOverwritePos) ASM::X86::Jmp(funcBody, outHook->injectionJumpTarget);
 					break;
 				case SHORT_JUMP:
-					new (outHook->headerOverwrite) ASM::X86::SJmp(funcBody, outHook->injectionJumpTarget);
+					new (headerOverwritePos) ASM::X86::SJmp(funcBody, outHook->injectionJumpTarget);
 					break;
 				default:
 					sanity(0 && "Unknown hook overwrite size");
 				}
 
+				headerOverwritePos += minOverwriteSize;
+
+				// Fill in the empty space with as few nops as possible
+				while (headerOverwritePos < headerOverwriteEnd)
+				{
+					const size_t headerBytesLeft = static_cast<size_t>(headerOverwriteEnd - headerOverwritePos);
+					const size_t nopSize = std::min(headerBytesLeft, ARRAY_COUNT(multiByteNOPTable)-1);
+
+					sanity(nopSize > 0 && nopSize < ARRAY_COUNT(multiByteNOPTable));
+
+					std::memcpy(headerOverwritePos, multiByteNOPTable[nopSize], nopSize);
+					headerOverwritePos += nopSize;
+				}
+
+				sanity(headerOverwritePos == headerOverwriteEnd);
 
 				// If we've only moved 1 instruction, and that instruction was a width that can be written to atomicly,
 				// then we can patch the function hook in without having to worry about threads being in the middle
