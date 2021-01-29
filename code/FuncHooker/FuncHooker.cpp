@@ -121,6 +121,7 @@ struct FuncHook
 	uint8_t proxyBackup[sizeof(ASM::X64::LJmp)];
 	uint8_t headderBackup[32]; // overwriteSize. 32 since max instruction size is 15 bytes, so allow space for 2 then round numbers are nice...
 	uint8_t headerOverwrite[32]; // overwriteSize.  32 since max instruction size is 15 bytes, so allow space for 2 then round numbers are nice...
+	uint8_t headerInstrOffsets[16]; // Relocation offsets from original location to new instruction location (accounting for instruction modification)
 };
 
 static constexpr const size_t funcHookSize = sizeof(FuncHook);
@@ -1040,16 +1041,26 @@ namespace
 			uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
 			const unsigned minMoveSize = minOverwriteSize;
 			unsigned moveSize = 0;
+			unsigned toOffset = 0;
 
 			for(unsigned headerOpIndex = 0; headerOpIndex < headerOpCount; ++headerOpIndex)
 			{
 				const ZydisDecodedInstruction& inst = headerOps[headerOpIndex];
-				const unsigned instSize = inst.length;
+				const unsigned moveEnd = moveSize + inst.length;
+				const uint8_t* const oldToAddr = toAddr;
+
+				for (unsigned relocByteIndex = moveSize; relocByteIndex < moveEnd; ++relocByteIndex)
+				{
+					sanity(moveSize >= toOffset);
+					sanity(toOffset - moveSize <= 255);
+					inoutHook->headerInstrOffsets[relocByteIndex] = static_cast<uint8_t>(toOffset - moveSize);
+				}
 
 				if (!RelocateCopyInstruction(inst, baseFromAddr, baseFromAddrEnd, &fromAddr, &toAddr))
 					return 0;
 
-				moveSize += instSize;
+				toOffset += static_cast<unsigned>(toAddr - oldToAddr);
+				moveSize = moveEnd;
 			}
 
 			sanity(moveSize < 256 && "Move size won't fit in u8");
@@ -1766,7 +1777,7 @@ namespace
 							const uintptr_t destStart = reinterpret_cast<uintptr_t>(hook.stub);
 							const uintptr_t destOffset = ip - overwriteStart;
 
-							*ctxIP = destStart + destOffset;
+							*ctxIP = destStart + destOffset + hook.headerInstrOffsets[destOffset];
 							SetThreadContext(thread, &threadContext);
 							break;
 						}
