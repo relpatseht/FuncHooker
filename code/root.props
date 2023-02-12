@@ -7,7 +7,7 @@
 
     <AppFolder>$(ProjectFolder)app\</AppFolder>
 
-    <ZydisFolder>$(CodeExternalFolder)zydis\3.1.0\</ZydisFolder>
+    <ZydisFolder>$(CodeExternalFolder)zydis\4.0.0\</ZydisFolder>
     <ZycoreFolder>$(ZydisFolder)dependencies\zycore\</ZycoreFolder>
     <FuncHookerFolder>$(CodeFolder)FuncHooker\</FuncHookerFolder>
 
