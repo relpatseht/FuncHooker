@@ -11,6 +11,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "zydis", "external\zydis\zyd
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TestInProcess", "TestInProcess\TestInProcess.vcxproj", "{60A1CD13-38AD-4002-861E-86700C980413}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "zycore", "external\zydis\zycore.vcxproj", "{E06E2E87-82B9-4DC2-A1E9-FE371CDBAAC2}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -43,12 +45,19 @@ Global
 		{60A1CD13-38AD-4002-861E-86700C980413}.Release|x64.Build.0 = Release|x64
 		{60A1CD13-38AD-4002-861E-86700C980413}.Release|x86.ActiveCfg = Release|Win32
 		{60A1CD13-38AD-4002-861E-86700C980413}.Release|x86.Build.0 = Release|Win32
+		{E06E2E87-82B9-4DC2-A1E9-FE371CDBAAC2}.Debug|x64.ActiveCfg = Debug|x64
+		{E06E2E87-82B9-4DC2-A1E9-FE371CDBAAC2}.Debug|x64.Build.0 = Debug|x64
+		{E06E2E87-82B9-4DC2-A1E9-FE371CDBAAC2}.Debug|x86.ActiveCfg = Debug|x64
+		{E06E2E87-82B9-4DC2-A1E9-FE371CDBAAC2}.Release|x64.ActiveCfg = Release|x64
+		{E06E2E87-82B9-4DC2-A1E9-FE371CDBAAC2}.Release|x64.Build.0 = Release|x64
+		{E06E2E87-82B9-4DC2-A1E9-FE371CDBAAC2}.Release|x86.ActiveCfg = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{88A23124-5640-35A0-B890-311D7A67A7D2} = {97645E1D-80C8-46F3-94DB-9791E9483A95}
+		{E06E2E87-82B9-4DC2-A1E9-FE371CDBAAC2} = {97645E1D-80C8-46F3-94DB-9791E9483A95}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {095EE872-C75D-424C-AA95-5F349E6B2F05}

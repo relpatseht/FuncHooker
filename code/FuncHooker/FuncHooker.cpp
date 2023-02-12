@@ -676,14 +676,14 @@ namespace
 
 	namespace create
 	{
-		static bool DecodeInstruction(const ZydisDecoder& disasm, const void* addr, ZydisDecodedInstruction* outInst)
+		static bool DecodeInstruction(const ZydisDecoder& disasm, const void* addr, ZydisDecodedInstruction* outInst, ZydisDecoderContext *outCtx)
 		{
 			static constexpr unsigned MAX_INSTRUCTION = 256;
 			ZyanStatus stat;
 
 			try
 			{
-				stat = ZydisDecoderDecodeBuffer(&disasm, addr, MAX_INSTRUCTION, outInst);
+				stat = ZydisDecoderDecodeInstruction(&disasm, outCtx, addr, MAX_INSTRUCTION, outInst);
 			}
 			catch (...)
 			{
@@ -707,8 +707,9 @@ namespace
 			{
 
 				ZydisDecodedInstruction inst;
+				ZydisDecoderContext ctx;
 
-				if (!DecodeInstruction(disasm, bodyPtr, &inst))
+				if (!DecodeInstruction(disasm, bodyPtr, &inst, &ctx))
 				{
 					if (bodyPtr == reinterpret_cast<uint8_t*>(Func))
 						bodyPtr = lastBodyPtr;
@@ -718,23 +719,27 @@ namespace
 
 				if (inst.mnemonic == ZYDIS_MNEMONIC_JMP)
 				{
-					const ZydisDecodedOperand& op = inst.operands[0];
-					uintptr_t absAddr;
+					ZydisDecodedOperand op0;
 
-					switch (op.type)
+					if (ZYAN_SUCCESS(ZydisDecoderDecodeOperands(&disasm, &ctx, &inst, &op0, 1)))
 					{
-					case ZYDIS_OPERAND_TYPE_POINTER:
-						absAddr = (static_cast<uint64_t>(op.ptr.segment) << 4) + op.ptr.offset;
-						break;
-					case ZYDIS_OPERAND_TYPE_IMMEDIATE:
-						absAddr = static_cast<uintptr_t>(reinterpret_cast<intptr_t>(bodyPtr) + inst.length + op.imm.value.s);
-						break;
-					default:
-						goto body_found;
-					}
+						uintptr_t absAddr;
 
-					lastBodyPtr = bodyPtr;
-					bodyPtr = reinterpret_cast<uint8_t*>(absAddr);
+						switch (op0.type)
+						{
+						case ZYDIS_OPERAND_TYPE_POINTER:
+							absAddr = (static_cast<uint64_t>(op0.ptr.segment) << 4) + op0.ptr.offset;
+							break;
+						case ZYDIS_OPERAND_TYPE_IMMEDIATE:
+							absAddr = static_cast<uintptr_t>(reinterpret_cast<intptr_t>(bodyPtr) + inst.length + op0.imm.value.s);
+							break;
+						default:
+							goto body_found;
+						}
+
+						lastBodyPtr = bodyPtr;
+						bodyPtr = reinterpret_cast<uint8_t*>(absAddr);
+					}
 				}
 				else
 				{
@@ -782,14 +787,21 @@ namespace
 			return offset + diff;
 		}
 
-		static bool RelocateCopyInstruction(const ZydisDecodedInstruction& inst, const uint8_t* baseFromAddr, const uint8_t* baseFromEndAddr, const uint8_t** curFromAddrPtr, uint8_t** curToAddrPtr)
+		struct FullInstruction
 		{
+			ZydisDecodedInstruction instr;
+			ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+		};
+
+		static bool RelocateCopyInstruction(const FullInstruction& instr, const uint8_t* baseFromAddr, const uint8_t* baseFromEndAddr, const uint8_t** curFromAddrPtr, uint8_t** curToAddrPtr)
+		{
+			const ZydisDecodedInstruction& inst = instr.instr;
 			uint8_t* curToAddr = *curToAddrPtr;
 			const uint8_t* curFromAddr = *curFromAddrPtr;
 
 			for (unsigned opIndex = 0; opIndex < inst.operand_count; ++opIndex)
 			{
-				const ZydisDecodedOperand& op = inst.operands[opIndex];
+				const ZydisDecodedOperand& op = instr.ops[opIndex];
 
 				if (op.visibility == ZYDIS_OPERAND_VISIBILITY_EXPLICIT)
 				{
@@ -1006,7 +1018,7 @@ namespace
 		}
 
 		template<size_t MAX_INSTRUCTIONS>
-		static unsigned GatherHeader(const ZydisDecoder& disasm, const uint8_t* headerAddr, unsigned minSize, ZydisDecodedInstruction (*outInstructions)[MAX_INSTRUCTIONS])
+		static unsigned GatherHeader(const ZydisDecoder& disasm, const uint8_t* headerAddr, unsigned minSize, FullInstruction (*outInstructions)[MAX_INSTRUCTIONS])
 		{
 			unsigned headerInstructions = 0;
 			const uint8_t* curHeaderAddr = headerAddr;
@@ -1014,18 +1026,22 @@ namespace
 
 			while (curHeaderAddr < headerAddrEnd)
 			{
-				ZydisDecodedInstruction* const curInstruction = (*outInstructions) + headerInstructions;
+				ZydisDecoderContext ctx;
+				FullInstruction* const curInstruction = (*outInstructions) + headerInstructions;
 
 				sanity(headerInstructions <= MAX_INSTRUCTIONS);
 
-				if (!DecodeInstruction(disasm, curHeaderAddr, curInstruction))
-					return 0;
-				else
+				if (DecodeInstruction(disasm, curHeaderAddr, &curInstruction->instr, &ctx))
 				{
-					curHeaderAddr += curInstruction->length;
-					++headerInstructions;
-
+					if (curInstruction->instr.operand_count == 0 || !ZYAN_SUCCESS(ZydisDecoderDecodeOperands(&disasm, &ctx, &curInstruction->instr, curInstruction->ops, curInstruction->instr.operand_count)))
+					{
+						curHeaderAddr += curInstruction->instr.length;
+						++headerInstructions;
+						continue;
+					}
 				}
+
+				return 0;
 			}
 
 			return headerInstructions;
@@ -1036,7 +1052,7 @@ namespace
 			const uint8_t* const baseFromAddr = reinterpret_cast<uint8_t*>(inoutHook->funcBody);
 			const uint8_t* const baseFromAddrEnd = baseFromAddr + minOverwriteSize;
 			const uint8_t* fromAddr = baseFromAddr;
-			ZydisDecodedInstruction headerOps[16];
+			FullInstruction headerOps[16];
 			const unsigned headerOpCount = GatherHeader(disasm, baseFromAddr, minOverwriteSize, &headerOps);
 			uint8_t* toAddr = reinterpret_cast<uint8_t*>(inoutHook->stub->funcHeader);
 			const unsigned minMoveSize = minOverwriteSize;
@@ -1045,8 +1061,8 @@ namespace
 
 			for(unsigned headerOpIndex = 0; headerOpIndex < headerOpCount; ++headerOpIndex)
 			{
-				const ZydisDecodedInstruction& inst = headerOps[headerOpIndex];
-				const unsigned moveEnd = moveSize + inst.length;
+				const FullInstruction& headerOp = headerOps[headerOpIndex];
+				const unsigned moveEnd = moveSize + headerOp.instr.length;
 				const uint8_t* const oldToAddr = toAddr;
 
 				for (unsigned relocByteIndex = moveSize; relocByteIndex < moveEnd; ++relocByteIndex)
@@ -1056,7 +1072,7 @@ namespace
 					inoutHook->headerInstrOffsets[relocByteIndex] = static_cast<uint8_t>(toOffset - moveSize);
 				}
 
-				if (!RelocateCopyInstruction(inst, baseFromAddr, baseFromAddrEnd, &fromAddr, &toAddr))
+				if (!RelocateCopyInstruction(headerOp, baseFromAddr, baseFromAddrEnd, &fromAddr, &toAddr))
 					return 0;
 
 				toOffset += static_cast<unsigned>(toAddr - oldToAddr);
@@ -1876,9 +1892,9 @@ extern "C"
 		ZydisDecoder disasm;
 
 		if constexpr (sizeof(void*) == 8)
-			ZydisDecoderInit(&disasm, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_ADDRESS_WIDTH_64);
+			ZydisDecoderInit(&disasm, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
 		else
-			ZydisDecoderInit(&disasm, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_ADDRESS_WIDTH_32);
+			ZydisDecoderInit(&disasm, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_STACK_WIDTH_32);
 
 		void** const funcBodies = (void**)valloca(sizeof(void*) * count);
 		FuncHook** const hooks = (FuncHook**)valloca(sizeof(FuncHook*) * count);

@@ -132,42 +132,42 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="$(ZydisFolder)src\Decoder.c" />
-    <ClCompile Include="3.1.0\src\DecoderData.c" />
-    <ClCompile Include="3.1.0\src\Register.c" />
-    <ClCompile Include="3.1.0\src\SharedData.c" />
+    <ClCompile Include="$(ZydisFolder)\src\DecoderData.c" />
+    <ClCompile Include="$(ZydisFolder)\src\Register.c" />
+    <ClCompile Include="$(ZydisFolder)\src\SharedData.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="$(ZydisFolder)resources\VersionInfo.rc" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="3.1.0\include\Zydis\Decoder.h" />
-    <ClInclude Include="3.1.0\include\Zydis\DecoderTypes.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumInstructionCategory.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumISAExt.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumISASet.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumMnemonic.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Generated\EnumRegister.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Internal\DecoderData.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Internal\SharedData.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Register.h" />
-    <ClInclude Include="3.1.0\include\Zydis\SharedTypes.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Status.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Utils.h" />
-    <ClInclude Include="3.1.0\include\Zydis\Zydis.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Decoder.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\DecoderTypes.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Generated\EnumInstructionCategory.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Generated\EnumISAExt.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Generated\EnumISASet.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Generated\EnumMnemonic.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Generated\EnumRegister.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Internal\DecoderData.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Internal\SharedData.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Register.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\SharedTypes.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Status.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Utils.h" />
+    <ClInclude Include="$(ZydisFolder)\include\Zydis\Zydis.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="3.1.0\src\Generated\AccessedFlags.inc" />
-    <None Include="3.1.0\src\Generated\DecoderTables.inc" />
-    <None Include="3.1.0\src\Generated\EncodableInstructions.inc" />
-    <None Include="3.1.0\src\Generated\EnumInstructionCategory.inc" />
-    <None Include="3.1.0\src\Generated\EnumISAExt.inc" />
-    <None Include="3.1.0\src\Generated\EnumISASet.inc" />
-    <None Include="3.1.0\src\Generated\EnumMnemonic.inc" />
-    <None Include="3.1.0\src\Generated\EnumRegister.inc" />
-    <None Include="3.1.0\src\Generated\FormatterStrings.inc" />
-    <None Include="3.1.0\src\Generated\InstructionDefinitions.inc" />
-    <None Include="3.1.0\src\Generated\InstructionEncodings.inc" />
-    <None Include="3.1.0\src\Generated\OperandDefinitions.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\AccessedFlags.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\DecoderTables.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\EncodableInstructions.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\EnumInstructionCategory.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\EnumISAExt.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\EnumISASet.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\EnumMnemonic.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\EnumRegister.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\FormatterStrings.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\InstructionDefinitions.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\InstructionEncodings.inc" />
+    <None Include="$(ZydisFolder)\src\Generated\OperandDefinitions.inc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
