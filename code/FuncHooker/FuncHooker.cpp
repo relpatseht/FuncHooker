@@ -1114,8 +1114,10 @@ namespace
 					// We only need to find the full 14 bytes for a long jump if our InjectionFunction
 					// is over 2gb away and our stub code is over 2gb away. Otherwise our proxy only
 					// needs to be 5 bytes for a regular jump.
-					if (std::abs(stubDist) > (1u << 31) - 1 && std::abs(injectDist) > (1u << 31) - 1)
+					if (std::abs(injectDist) > (1u << 31) - 1)
+					{
 						return sizeof(ASM::X64::LJmp);
+					}
 				}
 
 				return sizeof(ASM::X86::Jmp); // Otherwise, we just need 5 bytes for a regular jump.
@@ -2011,9 +2013,15 @@ extern "C"
 						static constexpr intptr_t MAX_32_JMP_DIST = (1u << 31) - 1;
 
 						if (std::abs(src - dst) < MAX_32_JMP_DIST)
+						{
+							sanity(hook->proxyBackupSize >= sizeof(ASM::X86::Jmp));
 							new (proxyAddr) ASM::X86::Jmp(src, dst);
+						}
 						else
+						{
+							sanity(hook->proxyBackupSize >= sizeof(ASM::X64::LJmp));
 							new (proxyAddr) ASM::X64::LJmp(dst);
+						}
 					}
 
 					if (hook->hotpatchable)
